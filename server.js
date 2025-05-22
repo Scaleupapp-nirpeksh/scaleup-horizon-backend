@@ -9,7 +9,8 @@ const connectDB = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
 const fundraisingRoutes = require('./routes/fundraisingRoutes');
 const financialRoutes = require('./routes/financialRoutes');
-// const kpiRoutes = require('./routes/kpiRoutes'); // For future
+const kpiRoutes = require('./routes/kpiRoutes'); 
+const advancedFeaturesRoutes = require('./routes/advancedFeaturesRoutes');
 
 const app = express();
 const PORT = process.env.HORIZON_PORT || 5001; // Different port from main app
@@ -24,7 +25,8 @@ connectDB();
 app.use('/api/horizon/auth', authRoutes);
 app.use('/api/horizon/fundraising', fundraisingRoutes);
 app.use('/api/horizon/financials', financialRoutes);
-// app.use('/api/horizon/kpis', kpiRoutes);
+app.use('/api/horizon/kpis', kpiRoutes);
+app.use('/api/horizon/advanced', advancedFeaturesRoutes);
 
 // Test Route
 app.get('/api/horizon', (req, res) => {

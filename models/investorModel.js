@@ -30,7 +30,7 @@ const investorSchema = new mongoose.Schema({
     safeDiscountRate: { type: Number }, // e.g., 0.2 for 20%
     noteInterestRate: { type: Number },
     noteMaturityDate: { type: Date },
-
+    
     totalCommittedAmount: { type: Number, default: 0 },
     totalReceivedAmount: { type: Number, default: 0 },
     roundId: { type: mongoose.Schema.Types.ObjectId, ref: 'Round', required: true },
