@@ -122,3 +122,4 @@ customKpiSchema.index({ name: 1, createdBy: 1 }, { unique: true });
 customKpiSchema.index({ 'cache.lastCalculated': 1 });
 
 const CustomKPI = mongoose.model('CustomKPI', customKpiSchema);
+module.exports = CustomKPI;

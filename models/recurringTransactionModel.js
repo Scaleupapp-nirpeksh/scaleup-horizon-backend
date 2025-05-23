@@ -95,3 +95,6 @@ recurringTransactionSchema.index({ type: 1, category: 1 });
 recurringTransactionSchema.index({ createdBy: 1 });
 
 const RecurringTransaction = mongoose.model('RecurringTransaction', recurringTransactionSchema);
+
+
+module.exports = RecurringTransaction;
