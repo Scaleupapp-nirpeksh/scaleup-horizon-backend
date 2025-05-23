@@ -1,386 +1,456 @@
-# ScaleUp Horizon - AI-Powered Financial Intelligence Platform
-
-## 🚀 Overview
-
-ScaleUp Horizon is a comprehensive financial management and predictive analytics platform designed specifically for startup CEOs and CFOs. It combines real-time financial tracking with AI-powered predictions to help startups optimize their runway, plan fundraising, and make data-driven decisions.
-
-## 🎯 Key Features
-
-### 1. **Financial Management**
-- Multi-bank account tracking
-- Revenue and expense categorization
-- Automated financial snapshots
-- Real-time cash position monitoring
-
-### 2. **Predictive Analytics**
-- AI-powered runway predictions with Monte Carlo simulations
-- Fundraising timing and probability analysis
-- Cash flow projections with seasonality
-- Revenue cohort analysis and LTV calculations
-
-### 3. **Strategic Planning**
-- Budget creation and variance tracking
-- Scenario modeling (what-if analysis)
-- ESOP pool management
-- Document management system
-
-### 4. **Investor Relations**
-- Automated investor update generation
-- Funding round tracking
-- Cap table management
-- Shareable dashboards
-
-## 🏗️ Architecture
-
-### Backend Stack
-- **Runtime**: Node.js with Express.js
-- **Database**: MongoDB with Mongoose ODM
-- **Authentication**: JWT-based auth with bcrypt
-- **File Storage**: Local storage with encryption
-- **AI/ML**: Custom prediction algorithms using statistical models
-
-### Core Models
-1. **HorizonUser**: User authentication and profiles
-2. **BankAccount**: Bank account tracking
-3. **Revenue**: Revenue transactions
-4. **Expense**: Expense transactions
-5. **FundraisingRound**: Investment rounds
-6. **KPISnapshot**: Daily/weekly/monthly metrics
-7. **RevenueCohort**: Cohort analysis
-8. **Document**: File management
-
-## 📊 API Structure
-
-### Authentication Endpoints
-```
-POST /auth/register          - Create new user account
-POST /auth/login            - Login and receive JWT
-GET  /auth/profile          - Get user profile
-```
-
-### Financial Management
-```
-# Bank Accounts
-GET    /accounts            - List all bank accounts
-POST   /accounts            - Add new bank account
-PUT    /accounts/:id        - Update account
-DELETE /accounts/:id        - Delete account
-
-# Revenue
-GET    /revenues            - List revenues (with filters)
-POST   /revenues            - Add revenue entry
-PUT    /revenues/:id        - Update revenue
-DELETE /revenues/:id        - Delete revenue
-
-# Expenses  
-GET    /expenses            - List expenses (with filters)
-POST   /expenses            - Add expense entry
-PUT    /expenses/:id        - Update expense
-DELETE /expenses/:id        - Delete expense
-```
-
-### KPIs and Analytics
-```
-# Snapshots
-POST /kpis/snapshots        - Create manual snapshot
-GET  /kpis/snapshots        - Get snapshots (with date range)
-GET  /kpis/metrics/:metric  - Get specific metric history
-
-# Analytics
-GET  /analytics/overview    - Financial overview
-GET  /analytics/burn-rate   - Burn rate analysis
-GET  /analytics/runway      - Runway calculation
-GET  /analytics/growth      - Growth metrics
-```
-
-### Predictive Analytics
-```
-# Runway Scenarios
-POST /analytics/runway-scenarios        - Create scenario
-GET  /analytics/runway-scenarios        - List scenarios
-POST /analytics/runway-scenarios/monte-carlo - Run simulation
-
-# Fundraising Predictions
-GET  /analytics/fundraising-probability - Get raise probability
-POST /analytics/fundraising-scenarios   - Model scenarios
-
-# Cash Flow Projections
-GET  /analytics/cash-flow-projection    - Get projections
-POST /analytics/cash-flow-projection    - Create custom projection
-
-# Revenue Cohorts
-POST /analytics/revenue-cohorts         - Create cohort
-GET  /analytics/revenue-cohorts         - List cohorts
-GET  /analytics/revenue-cohorts/:id/projections - Get projections
-```
-
-## 📥 Input/Output Examples
-
-### Creating a Revenue Entry
-**Input:**
-```json
-POST /revenues
-{
-  "customerName": "Acme Corp",
-  "amount": 50000,
-  "currency": "USD",
-  "date": "2024-03-15",
-  "category": "subscription",
-  "recurring": true,
-  "recurringFrequency": "monthly",
-  "description": "Enterprise plan - March 2024"
-}
-```
-
-**Output:**
-```json
-{
-  "_id": "65f4a2b8c1234567890abcde",
-  "customerName": "Acme Corp",
-  "amount": 50000,
-  "currency": "USD",
-  "date": "2024-03-15T00:00:00.000Z",
-  "category": "subscription",
-  "recurring": true,
-  "recurringFrequency": "monthly",
-  "description": "Enterprise plan - March 2024",
-  "createdBy": "65f4a2b8c1234567890abcdf",
-  "createdAt": "2024-03-15T10:30:00.000Z"
-}
-```
-
-### Running Runway Scenario
-**Input:**
-```json
-POST /analytics/runway-scenarios
-{
-  "name": "Aggressive Growth",
-  "assumptions": {
-    "revenueGrowthRate": 0.20,
-    "expenseGrowthRate": 0.15,
-    "hiringPlan": [
-      {"month": 1, "hires": 2, "avgSalary": 120000},
-      {"month": 3, "hires": 3, "avgSalary": 100000}
-    ]
-  }
-}
-```
-
-**Output:**
-```json
-{
-  "scenario": {
-    "_id": "65f4a2b8c1234567890abce0",
-    "name": "Aggressive Growth",
-    "baselineRunway": 18,
-    "projectedRunway": 14,
-    "criticalDate": "2025-07-15",
-    "monthlyProjections": [
-      {
-        "month": 1,
-        "revenue": 150000,
-        "expenses": 180000,
-        "netBurn": -30000,
-        "cashRemaining": 2470000
-      }
-      // ... more months
-    ]
-  }
-}
-```
-
-### Revenue Cohort Analysis
-**Input:**
-```json
-POST /analytics/revenue-cohorts
-{
-  "cohortName": "Q1 2024 Users",
-  "cohortStartDate": "2024-01-01",
-  "initialUsers": 100,
-  "acquisitionCost": 50000,
-  "metrics": [
-    {
-      "periodNumber": 0,
-      "activeUsers": 100,
-      "revenue": 10000,
-      "retentionRate": 1.0
-    },
-    {
-      "periodNumber": 1,
-      "activeUsers": 85,
-      "revenue": 8500,
-      "retentionRate": 0.85
-    }
-  ]
-}
-```
-
-**Output:**
-```json
-{
-  "_id": "65f4a2b8c1234567890abce1",
-  "cohortName": "Q1 2024 Users",
-  "initialUsers": 100,
-  "averageCAC": 500,
-  "actualLTV": 18500,
-  "projectedLTV": 45000,
-  "ltcacRatio": 3.2,
-  "paybackPeriod": 6,
-  "metrics": [...],
-  "projections": [
-    {
-      "month": 3,
-      "projectedUsers": 72,
-      "projectedRevenue": 7200,
-      "confidence": 0.85
-    }
-    // ... more projections
-  ]
-}
-```
-
-## 🔐 Security Features
-
-1. **JWT Authentication**: Secure token-based auth
-2. **Password Hashing**: bcrypt with salt rounds
-3. **Input Validation**: Comprehensive request validation
-4. **File Encryption**: AES-256 for document storage
-5. **Access Control**: User-specific data isolation
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Node.js (v14 or higher)
-- MongoDB (v4.4 or higher)
-- npm or yarn
-
-### Installation
-```bash
+ScaleUp Horizon v2.0 - Enhanced Financial Intelligence Platform 🚀
+🌟 New Features Overview
+1. ML-Powered Transaction Categorization
+Automatically categorizes expenses and revenue using Natural Language Processing
+Learns from corrections to improve accuracy over time
+Supports Indian vendors and payment methods
+95%+ accuracy after initial training
+2. Bank Statement Import & Reconciliation
+Import statements from HDFC, ICICI, SBI, Axis banks
+Automatic transaction matching with expenses/revenue
+Smart reconciliation with fuzzy matching
+Duplicate detection and prevention
+3. Custom KPI Builder
+Create any KPI with drag-and-drop formula builder
+Built-in KPIs: Burn Rate, Runway, LTV:CAC, Growth Rate
+Real-time calculations with historical tracking
+Visual dashboards with alerts
+4. Recurring Transactions
+Automatic creation of recurring expenses/revenue
+Flexible scheduling (daily, weekly, monthly, custom)
+Variable amount support with ranges
+Notification system for upcoming transactions
+5. Automated Report Generation
+Pre-built templates for investor updates, board reports
+Scheduled generation (weekly, monthly, quarterly)
+Multiple output formats (PDF, HTML, DOCX)
+Email distribution with tracking
+6. Advanced ML Analytics
+Expense prediction for next 30-90 days
+Anomaly detection for unusual transactions
+Cash flow optimization recommendations
+Spending pattern analysis
+🚀 Quick Start
+Installation
+bash
 # Clone the repository
-git clone https://github.com/your-org/scaleup-horizon-backend.git
+git clone https://github.com/scaleup/horizon-backend.git
+cd horizon-backend
 
 # Install dependencies
-cd scaleup-horizon-backend
 npm install
 
 # Set up environment variables
 cp .env.example .env
 # Edit .env with your configuration
 
+# Initialize database
+npm run migrate
+
 # Start the server
-npm start
-```
+npm run dev
+Environment Variables
+env
+# Database
+HORIZON_MONGODB_URI=mongodb://localhost:27017/scaleup-horizon
 
-### Environment Variables
-```env
-PORT=5001
-MONGODB_URI=mongodb://localhost:27017/scaleup-horizon
-JWT_SECRET=your-secret-key
-NODE_ENV=development
-```
+# Authentication
+HORIZON_JWT_SECRET=your-super-secret-jwt-key
 
-## 📱 Frontend Integration Guide
+# AWS (for file storage)
+HORIZON_AWS_ACCESS_KEY_ID=your-aws-access-key
+HORIZON_AWS_SECRET_ACCESS_KEY=your-aws-secret-key
+HORIZON_AWS_REGION=ap-south-1
+HORIZON_S3_BUCKET_NAME=scaleup-horizon-documents
 
-### Authentication Flow
-1. Register/login to receive JWT token
-2. Include token in all API requests:
-   ```
-   Authorization: Bearer <jwt-token>
-   ```
+# Email (for notifications)
+SENDGRID_API_KEY=your-sendgrid-api-key
+FROM_EMAIL=notifications@scaleup.com
 
-### Data Flow Patterns
-1. **Real-time Updates**: Poll KPI endpoints every 5 minutes
-2. **Financial Entries**: Submit immediately on user input
-3. **Predictions**: Cache results for 1 hour
-4. **Documents**: Stream large files in chunks
+# Frontend URL
+FRONTEND_URL=http://localhost:3000
 
-### Recommended UI Components
-1. **Dashboard**: Real-time metrics cards
-2. **Charts**: Time series for financial trends
-3. **Tables**: Sortable/filterable transaction lists
-4. **Forms**: Multi-step for complex entries
-5. **Visualizations**: Sankey diagrams for cash flow
+# Port
+HORIZON_PORT=5001
+📚 API Documentation
+Transaction Categorization
+Auto-categorize Transaction
+http
+POST /api/horizon/enhanced/transactions/categorize
+Authorization: Bearer <token>
+Content-Type: application/json
 
-### State Management Suggestions
-```javascript
-// Example Redux/Context structure
 {
-  auth: { user, token, isAuthenticated },
-  financial: { 
-    accounts: [], 
-    revenues: [], 
-    expenses: [],
-    totalCash: 0
-  },
-  kpis: {
-    currentSnapshot: {},
-    historicalData: [],
-    runway: 0
-  },
-  predictions: {
-    scenarios: [],
-    projections: {},
-    lastUpdated: null
+  "description": "Payment to AWS for cloud services",
+  "amount": 45000,
+  "vendor": "Amazon Web Services"
+}
+
+Response:
+{
+  "category": "Tech Infrastructure",
+  "confidence": 0.95,
+  "allScores": [
+    { "category": "Tech Infrastructure", "score": 0.95 },
+    { "category": "Software & Subscriptions", "score": 0.03 }
+  ],
+  "requiresReview": false
+}
+Train Model with Correction
+http
+POST /api/horizon/enhanced/transactions/:id/correct-category
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "correctCategory": "Software & Subscriptions"
+}
+Bank Sync
+Import Bank Statement
+http
+POST /api/horizon/enhanced/bank/import
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+Fields:
+- statement: CSV file
+- bankAccountId: "64a1b2c3d4e5f6789"
+- bankFormat: "hdfc" | "icici" | "sbi" | "axis" | "generic"
+
+Response:
+{
+  "success": true,
+  "importBatchId": "IMPORT_1234567890_abc123",
+  "imported": 156,
+  "errors": 2,
+  "summary": {
+    "totalDebits": 2450000,
+    "totalCredits": 180000,
+    "dateRange": {
+      "from": "2025-04-01",
+      "to": "2025-04-30"
+    }
   }
 }
-```
+Custom KPIs
+Create Custom KPI
+http
+POST /api/horizon/enhanced/kpis/custom
+Authorization: Bearer <token>
+Content-Type: application/json
 
-## 🧪 Testing
+{
+  "name": "customer_acquisition_efficiency",
+  "displayName": "Customer Acquisition Efficiency",
+  "category": "Sales",
+  "formula": "(new_customers / marketing_spend) * 1000",
+  "formulaVariables": [
+    {
+      "variable": "new_customers",
+      "source": "custom_metric",
+      "aggregation": "count",
+      "timeframe": "current_month"
+    },
+    {
+      "variable": "marketing_spend",
+      "source": "expense",
+      "filter": {
+        "field": "category",
+        "operator": "equals",
+        "value": "Marketing & Sales"
+      },
+      "aggregation": "sum",
+      "timeframe": "current_month"
+    }
+  ],
+  "displayFormat": {
+    "type": "number",
+    "decimals": 2,
+    "suffix": " customers/lakh"
+  },
+  "targets": [
+    {
+      "period": "2025-05",
+      "value": 50,
+      "type": "min"
+    }
+  ]
+}
+Get KPI Dashboard
+http
+GET /api/horizon/enhanced/kpis/dashboard
+Authorization: Bearer <token>
 
-### Test Coverage
-- Unit tests for prediction algorithms
-- Integration tests for API endpoints
-- End-to-end tests for critical workflows
+Response:
+{
+  "categories": {
+    "Financial": [
+      {
+        "id": "64a1b2c3d4e5f6789",
+        "name": "Monthly Burn Rate",
+        "value": 2450000,
+        "formattedValue": "₹24.5L",
+        "trend": -8.5,
+        "target": 2000000,
+        "visualization": {
+          "chartType": "gauge",
+          "color": "#F53F6E"
+        }
+      }
+    ]
+  },
+  "summary": {
+    "total": 12,
+    "improving": 7,
+    "declining": 3,
+    "onTarget": 8,
+    "offTarget": 4
+  }
+}
+Recurring Transactions
+Create Recurring Transaction
+http
+POST /api/horizon/enhanced/recurring-transactions
+Authorization: Bearer <token>
+Content-Type: application/json
 
-### Running Tests
-```bash
-npm test                 # Run all tests
-npm run test:unit       # Unit tests only
-npm run test:integration # Integration tests
-```
+{
+  "name": "AWS Monthly Bill",
+  "type": "expense",
+  "amount": 45000,
+  "isVariableAmount": true,
+  "amountVariation": {
+    "type": "percentage",
+    "value": 10
+  },
+  "category": "Tech Infrastructure",
+  "vendor": "Amazon Web Services",
+  "frequency": "monthly",
+  "dayOfMonth": 1,
+  "startDate": "2025-06-01",
+  "autoCreate": true,
+  "notifications": {
+    "enabled": true,
+    "daysBefore": 3
+  }
+}
+Get Upcoming Transactions
+http
+GET /api/horizon/enhanced/recurring-transactions/upcoming?days=30
+Authorization: Bearer <token>
 
-## 📈 Performance Considerations
+Response:
+{
+  "upcoming": [
+    {
+      "date": "2025-05-25",
+      "transactions": [
+        {
+          "recurringId": "64a1b2c3d4e5f6789",
+          "name": "Office Rent",
+          "type": "expense",
+          "amount": 150000,
+          "category": "Rent & Utilities",
+          "requiresApproval": false
+        }
+      ],
+      "totalExpenses": 150000,
+      "totalRevenue": 0
+    }
+  ],
+  "summary": {
+    "totalUpcoming": 28,
+    "totalExpenses": 3450000,
+    "totalRevenue": 500000,
+    "requiresApproval": 2
+  }
+}
+Report Generation
+Generate Report
+http
+POST /api/horizon/enhanced/reports/generate
+Authorization: Bearer <token>
+Content-Type: application/json
 
-1. **Caching**: Implement Redis for frequently accessed data
-2. **Pagination**: All list endpoints support pagination
-3. **Indexing**: MongoDB indexes on date and user fields
-4. **Batch Operations**: Support bulk imports for historical data
+{
+  "templateId": "64a1b2c3d4e5f6789",
+  "periodStart": "2025-05-01",
+  "periodEnd": "2025-05-31"
+}
 
-## 🤝 Contributing
+Response:
+{
+  "_id": "64b2c3d4e5f67890",
+  "title": "May 2025 Investor Update",
+  "reportType": "investor_update",
+  "content": {
+    "sections": [...],
+    "summary": "Strong revenue growth of 25% with improving unit economics.",
+    "highlights": [
+      "Achieved ₹25L in revenue",
+      "Reduced CAC by 30%",
+      "12 KPIs meeting targets"
+    ]
+  },
+  "files": [
+    {
+      "format": "pdf",
+      "url": "https://s3.ap-south-1.amazonaws.com/scaleup-horizon/reports/...",
+      "size": 245678
+    }
+  ]
+}
+ML Analytics
+Predict Expenses
+http
+GET /api/horizon/enhanced/ml/predict-expenses?days=30
+Authorization: Bearer <token>
 
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open Pull Request
+Response:
+[
+  {
+    "date": "2025-05-24",
+    "predictedAmount": 85000,
+    "confidence": 0.92
+  },
+  {
+    "date": "2025-05-25",
+    "predictedAmount": 42000,
+    "confidence": 0.89
+  }
+]
+Optimize Cash Flow
+http
+POST /api/horizon/enhanced/ml/optimize-cashflow
+Authorization: Bearer <token>
+Content-Type: application/json
 
-## 📝 License
+{
+  "currentState": {
+    "currentCash": 5000000,
+    "monthlyBurn": 2500000,
+    "upcomingExpenses": {...},
+    "expectedRevenue": {...}
+  },
+  "constraints": {
+    "minCashBalance": 1000000,
+    "maxPaymentDelay": 30
+  }
+}
 
-This project is proprietary software. All rights reserved.
+Response:
+{
+  "recommendations": [
+    {
+      "type": "payment_timing",
+      "category": "Marketing & Sales",
+      "action": "delay",
+      "days": 15,
+      "impact": "high",
+      "description": "Delay Marketing & Sales payments by 15 days to optimize cash flow"
+    },
+    {
+      "type": "expense_reduction",
+      "category": "Software & Subscriptions",
+      "percentage": "12.5",
+      "impact": "medium",
+      "description": "Reduce Software & Subscriptions expenses by 12.5% to improve runway"
+    }
+  ],
+  "projectedImpact": {
+    "runwayExtension": 1.8,
+    "cashFlowImprovement": 450000,
+    "riskReduction": 23.5
+  }
+}
+🎯 Best Practices
+1. Initial Setup
+Import at least 3 months of bank statements for better categorization
+Set up all recurring transactions to avoid manual entry
+Configure KPIs relevant to your business model
+Create report templates for regular updates
+2. Daily Usage
+Review and correct any miscategorized transactions
+Check anomaly alerts for unusual spending
+Monitor KPI dashboard for trends
+Approve pending recurring transactions
+3. Weekly Tasks
+Import latest bank statements
+Review cash flow predictions
+Check upcoming recurring transactions
+Generate weekly reports if configured
+4. Monthly Tasks
+Reconcile all bank accounts
+Review and update KPI targets
+Generate investor updates
+Analyze spending patterns
+🔧 Troubleshooting
+Common Issues
+Categorization Accuracy Low
+Solution: Correct more transactions to train the model
+Use bulk categorization for historical data
+Bank Import Fails
+Check CSV format matches the selected bank
+Ensure date format is correct
+Remove any header/footer rows
+KPI Not Calculating
+Verify all formula variables have data
+Check timeframe settings
+Ensure dependent KPIs are calculated first
+Reports Not Generating
+Check template configuration
+Verify data exists for the period
+Check S3 permissions for file storage
+🚦 Performance Tips
+Database Indexes
+javascript
+// Add these indexes for better performance
+db.expenses.createIndex({ date: -1, category: 1 })
+db.banktransactions.createIndex({ bankAccountId: 1, date: -1 })
+db.customkpis.createIndex({ createdBy: 1, isActive: 1 })
+Caching
+KPI values are cached for 1 hour
+Report templates are cached in memory
+ML model predictions are cached for 24 hours
+Batch Operations
+Use bulk APIs for importing transactions
+Schedule heavy operations during off-peak hours
+Limit report generation to 5 concurrent jobs
+🛡️ Security
+API Rate Limiting
+100 requests per minute per user
+1000 requests per hour per user
+Bulk operations count as 10 requests
+Data Encryption
+All bank data encrypted at rest
+SSL/TLS for all API communications
+Sensitive fields encrypted in database
+Access Control
+JWT tokens expire after 5 hours
+Role-based permissions (coming soon)
+Audit logs for all modifications
+📈 Roadmap
+Coming Soon (v2.1)
+ Multi-user support with roles
+ Mobile app
+ Direct bank API integration
+ Advanced forecasting models
+ Industry benchmarking
+Future (v3.0)
+ AI-powered insights
+ Automated fundraising assistance
+ Integration with accounting software
+ Blockchain-based audit trail
+ International currency support
+🤝 Contributing
+We welcome contributions! Please see CONTRIBUTING.md for guidelines.
 
-## 👥 Support
+📄 License
+This project is licensed under the ISC License - see LICENSE.md for details.
 
-For support, email support@scaleup-horizon.com or join our Slack channel.
+🆘 Support
+Email: support@scaleup.com
+Documentation: https://docs.scaleup.com/horizon
+Community: https://community.scaleup.com
+Built with ❤️ by the ScaleUp Team for startup founders worldwide!
 
----
-
-## Appendix: Complete API Documentation
-
-[See API Structure section above for detailed endpoints]
-
-## Appendix: Error Codes
-
-| Code | Message | Description |
-|------|---------|-------------|
-| 400  | Bad Request | Invalid input data |
-| 401  | Unauthorized | Missing or invalid token |
-| 403  | Forbidden | Access denied to resource |
-| 404  | Not Found | Resource doesn't exist |
-| 500  | Server Error | Internal server error |
-
-## Appendix: Webhook Events (Future)
-
-- `runway.critical` - Runway below 6 months
-- `budget.exceeded` - Department over budget
-- `fundraising.optimal` - Ideal time to raise
-- `cohort.anomaly` - Unusual cohort behavior

@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
 const financialController = require('../controllers/financialController');
+const { getTransactionCategorizer } = require('../services/transactionCategorizer');
 
 // Apply protect middleware to all routes in this file
 router.use(protect);
@@ -99,5 +100,65 @@ router.get('/overview', financialController.getFinancialOverview);
 // @access  Private (Founders)
 router.get('/fund-utilization', financialController.getFundUtilizationReport);
 
+
+router.post('/expenses/auto-categorize', async (req, res) => {
+    try {
+        const { description, amount, vendor } = req.body;
+        
+        const categorizer = await getTransactionCategorizer();
+        const result = await categorizer.categorizeTransaction(
+            description,
+            amount,
+            vendor
+        );
+        
+        res.json(result);
+    } catch (error) {
+        console.error('Categorization error:', error);
+        res.status(500).json({ error: 'Failed to categorize transaction' });
+    }
+});
+
+router.post('/expenses/bulk-categorize', async (req, res) => {
+    try {
+        const { transactions } = req.body;
+        
+        const categorizer = await getTransactionCategorizer();
+        const results = await categorizer.bulkCategorize(transactions);
+        
+        res.json({ results });
+    } catch (error) {
+        console.error('Bulk categorization error:', error);
+        res.status(500).json({ error: 'Failed to categorize transactions' });
+    }
+});
+
+router.post('/expenses/:id/correct-category', async (req, res) => {
+    try {
+        const { correctCategory } = req.body;
+        const expense = await Expense.findById(req.params.id);
+        
+        if (!expense) {
+            return res.status(404).json({ error: 'Expense not found' });
+        }
+        
+        const categorizer = await getTransactionCategorizer();
+        await categorizer.learnFromCorrection(
+            expense._id,
+            expense.description,
+            expense.vendor,
+            correctCategory
+        );
+        
+        // Update the expense
+        expense.category = correctCategory;
+        await expense.save();
+        
+        res.json({ message: 'Category updated and model trained' });
+    } catch (error) {
+        console.error('Category correction error:', error);
+        res.status(500).json({ error: 'Failed to update category' });
+    }
+});
 
 module.exports = router;
