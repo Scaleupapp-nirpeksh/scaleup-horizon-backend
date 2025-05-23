@@ -11,9 +11,8 @@ const bankAccountSchema = new mongoose.Schema({
     notes: { type: String },
     createdAt: { type: Date, default: Date.now },
 });
+
 const BankAccount = mongoose.model('BankAccount', bankAccountSchema);
 
-
-
-
-
+// Add this line - it was missing!
+module.exports = BankAccount;

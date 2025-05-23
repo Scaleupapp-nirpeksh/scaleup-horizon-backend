@@ -1,7 +1,9 @@
 // controllers/investorReportController.js
 const InvestorReport = require('../models/investorReportModel');
 const Round = require('../models/roundModel');
-const { BankAccount, Expense } = require('../models/financialModels'); // Assuming these are in financialModels.js
+const Expense = require('../models/expenseModel');
+const Revenue = require('../models/revenueModel');
+const BankAccount = require('../models/bankAccountModel');
 const ManualKpiSnapshot = require('../models/manualKpiSnapshotModel');
 const mongoose = require('mongoose');
 
