@@ -29,11 +29,90 @@ router.get('/runway-scenarios/compare', PredictiveAnalyticsController.compareRun
 // @access  Private
 router.post('/fundraising-predictions', PredictiveAnalyticsController.createFundraisingPrediction);
 
+// @route   GET /api/horizon/analytics/fundraising-readiness
+// @desc    Analyze current fundraising readiness
+// @access  Private
+// Note: PredictiveAnalyticsController.analyzeCurrentFundraisingReadiness might need to be adapted
+// to send a response directly (e.g., res.json(data)) or a new wrapper method created.
+router.get('/fundraising-readiness', async (req, res) => {
+    try {
+        // Assuming analyzeCurrentFundraisingReadiness is adapted or wrapped
+        // to handle req, res or a wrapper is used.
+        // For direct use, it would be:
+        // const readinessMetrics = await PredictiveAnalyticsController.analyzeCurrentFundraisingReadiness();
+        // res.json(readinessMetrics);
+        // For now, directly calling if you intend to refactor it:
+        PredictiveAnalyticsController.analyzeCurrentFundraisingReadiness()
+            .then(data => res.json(data))
+            .catch(err => {
+                console.error('Error in fundraising-readiness route:', err);
+                res.status(500).json({ msg: 'Server Error' });
+            });
+    } catch (err) {
+        console.error('Error in fundraising-readiness route:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+});
+
+// @route   GET /api/horizon/analytics/market-comparables
+// @desc    Get market comparables for fundraising
+// @access  Private
+// Example Query: /market-comparables?roundType=Seed&targetSize=1000000
+// Note: PredictiveAnalyticsController.getMarketComparables might need to be adapted
+// to take req, res and parse query params or a new wrapper method created.
+router.get('/market-comparables', async (req, res) => {
+    try {
+        const { roundType, targetSize } = req.query;
+        if (!roundType || !targetSize) {
+            return res.status(400).json({ msg: 'roundType and targetSize query parameters are required.' });
+        }
+        // Assuming getMarketComparables is adapted or wrapped:
+        const marketData = await PredictiveAnalyticsController.getMarketComparables(roundType, parseFloat(targetSize));
+        res.json(marketData);
+    } catch (err) {
+        console.error('Error in market-comparables route:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+});
+
+
 // --- Cash Flow Forecasts ---
 // @route   POST /api/horizon/analytics/cash-flow-forecasts
 // @desc    Create a cash flow forecast
 // @access  Private
 router.post('/cash-flow-forecasts', PredictiveAnalyticsController.createCashFlowForecast);
+
+// @route   GET /api/horizon/analytics/cash-flow-data/historical
+// @desc    Get historical cash flow data
+// @access  Private
+// Note: PredictiveAnalyticsController.getHistoricalCashFlowData might need to be adapted
+// to send a response directly or a new wrapper method created.
+router.get('/cash-flow-data/historical', async (req, res) => {
+    try {
+        // Assuming getHistoricalCashFlowData is adapted or wrapped:
+        const historicalData = await PredictiveAnalyticsController.getHistoricalCashFlowData();
+        res.json(historicalData);
+    } catch (err) {
+        console.error('Error in historical-cash-flow-data route:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+});
+
+// @route   GET /api/horizon/analytics/cash-position/current
+// @desc    Get current cash position
+// @access  Private
+// Note: PredictiveAnalyticsController.getCurrentCashPosition might need to be adapted
+// to send a response directly or a new wrapper method created.
+router.get('/cash-position/current', async (req, res) => {
+    try {
+        // Assuming getCurrentCashPosition is adapted or wrapped:
+        const currentPosition = await PredictiveAnalyticsController.getCurrentCashPosition();
+        res.json(currentPosition);
+    } catch (err) {
+        console.error('Error in current-cash-position route:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+});
 
 // --- Revenue Cohorts ---
 // @route   POST /api/horizon/analytics/revenue-cohorts
