@@ -14,10 +14,11 @@ const kpiRoutes = require('./routes/kpiRoutes');
 const advancedFeaturesRoutes = require('./routes/advancedFeaturesRoutes');
 const predictiveAnalyticsRoutes = require('./routes/predictiveAnalyticsRoutes');
 const investorReportRoutes = require('./routes/investorReportRoutes');
-
 // Import new enhanced routes
 const enhancedRoutes = require('./routes/enhancedRoutes');
-
+const headcountRoutes = require('./routes/headcountRoutes');
+const productMilestoneRoutes = require('./routes/productMilestoneRoutes');
+const investorMeetingRoutes = require('./routes/investorMeetingRoutes');
 // Import services for initialization
 const { getRecurringTransactionService } = require('./services/recurringTransactionService');
 const { getAdvancedMLService } = require('./services/advancedMLService');
@@ -51,6 +52,9 @@ app.use('/api/horizon/kpis', kpiRoutes);
 app.use('/api/horizon/advanced', advancedFeaturesRoutes);
 app.use('/api/horizon/analytics', predictiveAnalyticsRoutes);
 app.use('/api/horizon/investor-reports', investorReportRoutes);
+app.use('/api/horizon/headcount', headcountRoutes);
+app.use('/api/horizon/product-milestones', productMilestoneRoutes);
+app.use('/api/horizon/investor-meetings', investorMeetingRoutes);
 
 // New enhanced features routes
 app.use('/api/horizon/enhanced', enhancedRoutes);
