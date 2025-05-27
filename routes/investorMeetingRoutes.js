@@ -1,5 +1,3 @@
-
-
 // routes/investorMeetingRoutes.js
 const express = require('express');
 const router = express.Router();
@@ -75,5 +73,3 @@ router.patch('/:id/action-items/:actionId', investorMeetingController.updateActi
 router.post('/:id/complete', investorMeetingController.completeMeeting);
 
 module.exports = router;
-
-

@@ -5,55 +5,55 @@ const mongoose = require('mongoose');
  * Metric Snapshot Schema - captures point-in-time metrics for meeting
  */
 const metricSnapshotSchema = new mongoose.Schema({
-    category: { 
+    category: {
         type: String,
         required: true,
         enum: [
-            'Financial', 
-            'User', 
-            'Product', 
-            'Team', 
-            'Sales', 
-            'Marketing', 
+            'Financial',
+            'User',
+            'Product',
+            'Team',
+            'Sales',
+            'Marketing',
             'Other'
-        ] 
+        ]
     },
-    name: { 
-        type: String, 
-        required: true, 
-        trim: true 
+    name: {
+        type: String,
+        required: true,
+        trim: true
     },
-    value: { 
-        type: mongoose.Schema.Types.Mixed, 
-        required: true 
+    value: {
+        type: mongoose.Schema.Types.Mixed,
+        // Not strictly required, as some metrics might be pending
     },
-    previousValue: { 
-        type: mongoose.Schema.Types.Mixed 
+    previousValue: {
+        type: mongoose.Schema.Types.Mixed
     },
-    changePercentage: { 
-        type: Number 
+    changePercentage: {
+        type: Number
     },
-    trend: { 
+    trend: {
         type: String,
         enum: ['up', 'down', 'flat', 'unknown'],
-        default: 'unknown' 
+        default: 'unknown'
     },
-    format: { 
+    format: {
         type: String,
         enum: ['number', 'currency', 'percentage', 'date', 'text'],
-        default: 'number' 
+        default: 'number'
     },
-    contextNote: { 
+    contextNote: {
         type: String,
-        trim: true 
+        trim: true
     },
-    highlight: { 
+    highlight: {
         type: Boolean,
-        default: false 
+        default: false
     },
-    order: { 
+    order: {
         type: Number,
-        default: 0 
+        default: 0
     }
 }, { _id: false });
 
@@ -61,46 +61,46 @@ const metricSnapshotSchema = new mongoose.Schema({
  * Talking Point Schema - for key discussion items
  */
 const talkingPointSchema = new mongoose.Schema({
-    title: { 
-        type: String, 
-        required: true, 
-        trim: true 
+    title: {
+        type: String,
+        required: true,
+        trim: true
     },
-    category: { 
+    category: {
         type: String,
         enum: [
-            'Win', 
-            'Challenge', 
-            'Request', 
-            'Update', 
-            'Question', 
-            'Strategic', 
+            'Win',
+            'Challenge',
+            'Request',
+            'Update',
+            'Question',
+            'Strategic',
             'Other'
         ],
-        default: 'Update' 
+        default: 'Update'
     },
-    content: { 
-        type: String, 
-        required: true, 
-        trim: true 
+    content: {
+        type: String,
+        required: true,
+        trim: true
     },
-    priority: { 
+    priority: {
         type: Number,
         min: 1,
         max: 5,
-        default: 3 
+        default: 3
     },
-    relatedMetrics: [{ 
-        type: String, 
-        trim: true 
-    }],
-    notes: { 
+    relatedMetrics: [{
         type: String,
-        trim: true 
+        trim: true
+    }],
+    notes: {
+        type: String,
+        trim: true
     },
-    wasDiscussed: { 
+    wasDiscussed: {
         type: Boolean,
-        default: false 
+        default: false
     }
 }, { _id: true });
 
@@ -108,36 +108,36 @@ const talkingPointSchema = new mongoose.Schema({
  * Feedback Item Schema - for investor feedback
  */
 const feedbackItemSchema = new mongoose.Schema({
-    topic: { 
-        type: String, 
-        required: true, 
-        trim: true 
+    topic: {
+        type: String,
+        required: true,
+        trim: true
     },
-    feedback: { 
-        type: String, 
-        required: true, 
-        trim: true 
+    feedback: {
+        type: String,
+        required: true,
+        trim: true
     },
-    feedbackType: { 
+    feedbackType: {
         type: String,
         enum: [
-            'Positive', 
-            'Negative', 
-            'Suggestion', 
-            'Question', 
-            'Concern', 
+            'Positive',
+            'Negative',
+            'Suggestion',
+            'Question',
+            'Concern',
             'Other'
         ],
-        default: 'Suggestion' 
+        default: 'Suggestion'
     },
-    priority: { 
+    priority: {
         type: String,
         enum: ['Critical', 'High', 'Medium', 'Low'],
-        default: 'Medium' 
+        default: 'Medium'
     },
-    requiringAction: { 
+    requiringAction: {
         type: Boolean,
-        default: false 
+        default: false
     }
 }, { _id: true });
 
@@ -145,391 +145,245 @@ const feedbackItemSchema = new mongoose.Schema({
  * Action Item Schema - for post-meeting tasks
  */
 const actionItemSchema = new mongoose.Schema({
-    action: { 
-        type: String, 
-        required: true, 
-        trim: true 
+    action: {
+        type: String,
+        required: true,
+        trim: true
     },
-    assignee: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'HorizonUser' 
+    assignee: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'HorizonUser'
     },
-    dueDate: { 
-        type: Date 
+    dueDate: {
+        type: Date
     },
-    status: { 
+    status: {
         type: String,
         enum: ['Not Started', 'In Progress', 'Completed', 'Cancelled'],
-        default: 'Not Started' 
+        default: 'Not Started'
     },
-    completedDate: { 
-        type: Date 
+    completedDate: {
+        type: Date
     },
-    notes: { 
+    notes: {
         type: String,
-        trim: true 
+        trim: true
     }
 }, { _id: true });
 
 /**
- * Main Investor Meeting Schema
- * Comprehensive tracking of investor meetings, preparation, and follow-ups
+ * Sections to include in the meeting preparation and display
  */
-const investorMeetingSchema = new mongoose.Schema({
-    // Basic meeting information
-    title: { 
-        type: String, 
-        required: true, 
-        trim: true 
-    },
-    meetingDate: { 
-        type: Date, 
-        required: true,
-        index: true 
-    },
-    duration: { 
-        type: Number,
-        comment: 'Duration in minutes' 
-    },
-    meetingType: { 
-        type: String,
-        enum: [
-            'Regular Update', 
-            'Board Meeting', 
-            'Fundraising', 
-            'Due Diligence', 
-            'Strategic Discussion', 
-            'Other'
-        ],
-        default: 'Regular Update' 
-    },
-    
-    // Participants
-    investors: [{
-        investorId: { 
-            type: mongoose.Schema.Types.ObjectId, 
-            ref: 'Investor' 
-        },
-        name: { 
-            type: String, 
-            trim: true 
-        },
-        company: { 
-            type: String, 
-            trim: true 
-        },
-        role: { 
-            type: String, 
-            trim: true 
-        },
-        email: { 
-            type: String, 
-            trim: true 
-        },
-        attended: { 
-            type: Boolean,
-            default: true 
-        }
-    }],
-    internalParticipants: [{
-        userId: { 
-            type: mongoose.Schema.Types.ObjectId, 
-            ref: 'HorizonUser' 
-        },
-        name: { 
-            type: String, 
-            trim: true 
-        },
-        role: { 
-            type: String, 
-            trim: true 
-        }
-    }],
-    
-    // Meeting logistics
-    location: { 
-        type: String,
-        trim: true 
-    },
-    meetingFormat: { 
-        type: String,
-        enum: ['In-person', 'Video', 'Phone', 'Hybrid'],
-        default: 'Video' 
-    },
-    meetingLink: { 
-        type: String,
-        trim: true 
-    },
-    
-    // Meeting content
-    agenda: { 
-        type: String,
-        trim: true 
-    },
-    talkingPoints: [talkingPointSchema],
-    
-    // Metrics snapshots
-    metricSnapshots: [metricSnapshotSchema],
-    
-    // Highlighted KPIs
-    highlightedKpis: [{
-        kpiId: { 
-            type: mongoose.Schema.Types.ObjectId, 
-            ref: 'CustomKPI' 
-        },
-        kpiName: { 
-            type: String, 
-            trim: true 
-        }
-    }],
-    
-    // Highlighted milestones
-    highlightedMilestones: [{
-        milestoneId: { 
-            type: mongoose.Schema.Types.ObjectId, 
-            ref: 'ProductMilestone' 
-        },
-        milestoneName: { 
-            type: String, 
-            trim: true 
-        },
-        status: { 
-            type: String 
-        },
-        completionPercentage: { 
-            type: Number 
-        }
-    }],
-    
-    // Team updates
-    teamUpdates: {
-        currentHeadcount: { 
-            type: Number 
-        },
-        newHires: [{
-            headcountId: { 
-                type: mongoose.Schema.Types.ObjectId, 
-                ref: 'Headcount' 
-            },
-            name: { 
-                type: String, 
-                trim: true 
-            },
-            role: { 
-                type: String, 
-                trim: true 
-            },
-            department: { 
-                type: String, 
-                trim: true 
-            }
-        }],
-        openPositions: { 
-            type: Number 
-        },
-        keyDepartures: [{
-            name: { 
-                type: String, 
-                trim: true 
-            },
-            role: { 
-                type: String, 
-                trim: true 
-            },
-            impactOnBusiness: { 
-                type: String, 
-                trim: true 
-            }
-        }]
-    },
-    
-    // Financial snapshots
-    financialSnapshot: {
-        cashBalance: { 
-            type: Number 
-        },
-        monthlyBurn: { 
-            type: Number 
-        },
-        runway: { 
-            type: Number,
-            comment: 'Runway in months' 
-        },
-        mrr: { 
-            type: Number,
-            comment: 'Monthly Recurring Revenue' 
-        },
-        arr: { 
-            type: Number,
-            comment: 'Annual Recurring Revenue' 
-        },
-        totalFundsRaised: { 
-            type: Number 
-        }
-    },
-    
-    // Meeting outcome tracking
-    status: { 
-        type: String,
-        enum: [
-            'Scheduled', 
-            'Preparation', 
-            'Completed', 
-            'Cancelled', 
-            'Rescheduled'
-        ],
-        default: 'Scheduled',
-        index: true 
-    },
-    preparation: {
-        status: { 
-            type: String,
-            enum: [
-                'Not Started', 
-                'In Progress', 
-                'Ready', 
-                'Needs Review'
-            ],
-            default: 'Not Started' 
-        },
-        assignedTo: { 
-            type: mongoose.Schema.Types.ObjectId, 
-            ref: 'HorizonUser' 
-        },
-        dataCollectionComplete: { 
-            type: Boolean,
-            default: false 
-        },
-        presentationReady: { 
-            type: Boolean,
-            default: false 
-        },
-        preparationNotes: { 
-            type: String,
-            trim: true 
-        }
-    },
-    
-    // Meeting records
-    notes: { 
-        type: String,
-        trim: true 
-    },
-    summary: { 
-        type: String,
-        trim: true 
-    },
-    recordingUrl: { 
-        type: String,
-        trim: true 
-    },
-    
-    // Feedback and outcomes
-    feedbackItems: [feedbackItemSchema],
-    actionItems: [actionItemSchema],
-    
-    // Post-meeting assessment
-    meetingEffectiveness: { 
-        type: Number,
-        min: 1,
-        max: 5,
-        comment: 'Scale of 1-5, with 5 being most effective' 
-    },
-    sentimentScore: { 
-        type: Number,
-        min: -1,
-        max: 1,
-        comment: 'Investor sentiment, -1 to 1 (negative to positive)' 
-    },
-    nextSteps: { 
-        type: String,
-        trim: true 
-    },
-    
-    // Related information
-    relatedDocuments: [{ 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Document' 
-    }],
-    previousMeetingId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'InvestorMeeting' 
-    },
-    nextMeetingId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'InvestorMeeting' 
-    },
-    relatedRoundId: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Round' 
-    },
-    
-    // Additional info
-    tags: [{ 
-        type: String, 
-        trim: true 
-    }],
-    
-    // Metadata
-    createdBy: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'HorizonUser', 
-        required: true 
-    },
-    updatedBy: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'HorizonUser' 
-    },
-    createdAt: { 
-        type: Date, 
-        default: Date.now 
-    },
-    updatedAt: { 
-        type: Date, 
-        default: Date.now 
-    }
-});
+const meetingSectionsSchema = new mongoose.Schema({
+    financialSnapshot: { type: Boolean, default: true },
+    teamUpdates: { type: Boolean, default: true },
+    productMilestones: { type: Boolean, default: true },
+    kpis: { type: Boolean, default: true },
+    userMetrics: { type: Boolean, default: true }, // Ensures this flag exists and defaults to true
+    runwayScenario: { type: Boolean, default: true },
+    fundraisingPrediction: { type: Boolean, default: true },
+    budgetSummary: { type: Boolean, default: true },
+    talkingPoints: { type: Boolean, default: true },
+    suggestedDocuments: { type: Boolean, default: true }
+}, { _id: false });
 
 /**
- * Pre-save middleware for investor meeting
- * Updates status and completion information
+ * Budget Summary Schema
  */
+const budgetSummarySchema = new mongoose.Schema({
+    budgetName: { type: String },
+    period: { type: String },
+    totalBudgeted: { type: Number },
+    totalActualSpent: { type: Number },
+    totalVariance: { type: Number },
+    topCategoryVariances: [{
+        category: String,
+        budgeted: Number,
+        actual: Number,
+        variance: Number
+    }]
+}, { _id: false });
+
+/**
+ * User Metrics Snapshot Schema - NEW
+ * To store a snapshot of key user metrics for the meeting.
+ */
+const userMetricsSnapshotSchema = new mongoose.Schema({
+    snapshotDate: { type: Date },
+    dau: { type: Number },
+    mau: { type: Number },
+    totalRegisteredUsers: { type: Number },
+    newUsersToday: { type: Number },
+    dauMauRatio: { type: String } // Storing as string because controller formats it with '%'
+}, { _id: false });
+
+
+/**
+ * Main Investor Meeting Schema
+ */
+const investorMeetingSchema = new mongoose.Schema({
+    title: { type: String, required: true, trim: true },
+    meetingDate: { type: Date, required: true, index: true },
+    duration: { type: Number, comment: 'Duration in minutes' },
+    meetingType: {
+        type: String,
+        enum: ['Regular Update', 'Board Meeting', 'Fundraising', 'Due Diligence', 'Strategic Discussion', 'Other'],
+        default: 'Regular Update'
+    },
+    investors: [{
+        investorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Investor' },
+        name: { type: String, trim: true },
+        company: { type: String, trim: true },
+        role: { type: String, trim: true },
+        email: { type: String, trim: true },
+        attended: { type: Boolean, default: true }
+    }],
+    internalParticipants: [{
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'HorizonUser' },
+        name: { type: String, trim: true },
+        role: { type: String, trim: true }
+    }],
+    location: { type: String, trim: true },
+    meetingFormat: { type: String, enum: ['In-person', 'Video', 'Phone', 'Hybrid'], default: 'Video' },
+    meetingLink: { type: String, trim: true },
+    agenda: { type: String, trim: true },
+    talkingPoints: [talkingPointSchema],
+    metricSnapshots: [metricSnapshotSchema],
+    highlightedKpis: [{
+        kpiId: { type: mongoose.Schema.Types.ObjectId, ref: 'CustomKPI' },
+        kpiName: { type: String, trim: true },
+        value: mongoose.Schema.Types.Mixed,
+        formattedValue: String,
+        trend: Number,
+        target: mongoose.Schema.Types.Mixed,
+    }],
+    highlightedMilestones: [{
+        milestoneId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductMilestone' },
+        milestoneName: { type: String, trim: true },
+        status: { type: String },
+        completionPercentage: { type: Number },
+        investorSummary: String,
+        plannedEndDate: Date
+    }],
+    teamUpdates: {
+        currentHeadcount: { type: Number },
+        newHires: [{
+            headcountId: { type: mongoose.Schema.Types.ObjectId, ref: 'Headcount' },
+            name: { type: String, trim: true },
+            role: { type: String, trim: true },
+            department: { type: String, trim: true }
+        }],
+        openPositions: { type: Number },
+        keyDepartures: [{
+            name: { type: String, trim: true },
+            role: { type: String, trim: true },
+            impactOnBusiness: { type: String, trim: true }
+        }]
+    },
+    financialSnapshot: {
+        cashBalance: { type: Number },
+        monthlyBurn: { type: Number },
+        runway: { type: Number, comment: 'Runway in months' },
+        mrr: { type: Number, comment: 'Monthly Recurring Revenue' },
+        arr: { type: Number, comment: 'Annual Recurring Revenue' },
+        totalFundsRaised: { type: Number }
+    },
+    // NEW: Field to store the snapshot of user metrics
+    userMetricsSnapshot: userMetricsSnapshotSchema,
+
+    linkedRunwayScenario: {
+        scenarioId: { type: mongoose.Schema.Types.ObjectId, ref: 'RunwayScenario' },
+        name: String,
+        totalRunwayMonths: Number,
+        cashOutDate: Date,
+        p10Runway: Number,
+        p90Runway: Number,
+    },
+    linkedFundraisingPrediction: {
+        predictionId: { type: mongoose.Schema.Types.ObjectId, ref: 'FundraisingPrediction' },
+        name: String,
+        targetRoundSize: Number,
+        predictedCloseDate: Date,
+        overallProbability: Number,
+    },
+    budgetSummary: budgetSummarySchema,
+    status: {
+        type: String,
+        enum: ['Scheduled', 'Preparation', 'Completed', 'Cancelled', 'Rescheduled'],
+        default: 'Scheduled',
+        index: true
+    },
+    preparation: {
+        status: {
+            type: String,
+            enum: ['Not Started', 'In Progress', 'Ready', 'Needs Review'],
+            default: 'Not Started'
+        },
+        assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'HorizonUser' },
+        dataCollectionComplete: { type: Boolean, default: false },
+        presentationReady: { type: Boolean, default: false },
+        preparationNotes: { type: String, trim: true }
+    },
+    notes: { type: String, trim: true },
+    summary: { type: String, trim: true },
+    recordingUrl: { type: String, trim: true },
+    feedbackItems: [feedbackItemSchema],
+    actionItems: [actionItemSchema],
+    meetingEffectiveness: {
+        type: Number, min: 1, max: 5,
+        comment: 'Scale of 1-5, with 5 being most effective'
+    },
+    sentimentScore: {
+        type: Number, min: -1, max: 1,
+        comment: 'Investor sentiment, -1 to 1 (negative to positive)'
+    },
+    nextSteps: { type: String, trim: true },
+    relatedDocuments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Document' }],
+    suggestedDocuments: [{
+        documentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Document' },
+        fileName: String,
+        category: String,
+        reason: String
+    }],
+    previousMeetingId: { type: mongoose.Schema.Types.ObjectId, ref: 'InvestorMeeting' },
+    nextMeetingId: { type: mongoose.Schema.Types.ObjectId, ref: 'InvestorMeeting' },
+    relatedRoundId: { type: mongoose.Schema.Types.ObjectId, ref: 'Round' },
+    meetingSections: {
+        type: meetingSectionsSchema,
+        default: () => ({ // Ensures all new flags also default to true
+            financialSnapshot: true, teamUpdates: true, productMilestones: true, kpis: true,
+            userMetrics: true, runwayScenario: true, fundraisingPrediction: true,
+            budgetSummary: true, talkingPoints: true, suggestedDocuments: true
+        })
+    },
+    tags: [{ type: String, trim: true }],
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'HorizonUser', required: true },
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'HorizonUser' },
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now }
+});
+
 investorMeetingSchema.pre('save', function(next) {
     this.updatedAt = Date.now();
-    
-    // Set status to Completed if meeting date has passed
     const now = new Date();
     if (this.meetingDate && this.meetingDate < now && this.status === 'Scheduled') {
         this.status = 'Completed';
     }
-    
-    // Calculate talkingPoints discussed percentage
     if (this.talkingPoints && this.talkingPoints.length > 0) {
-        const discussedCount = this.talkingPoints.filter(point => 
-            point.wasDiscussed
-        ).length;
-        
+        const discussedCount = this.talkingPoints.filter(point => point.wasDiscussed).length;
         this.discussedPercentage = Math.round((discussedCount / this.talkingPoints.length) * 100);
     }
-    
-    // Calculate action items completion percentage
     if (this.actionItems && this.actionItems.length > 0) {
-        const completedCount = this.actionItems.filter(item => 
-            item.status === 'Completed'
-        ).length;
-        
+        const completedCount = this.actionItems.filter(item => item.status === 'Completed').length;
         this.actionItemsCompletionPercentage = Math.round((completedCount / this.actionItems.length) * 100);
     }
-    
     next();
 });
 
-/**
- * Static method to get upcoming meetings
- */
-investorMeetingSchema.statics.getUpcomingMeetings = async function(limit = 5) {
+investorMeetingSchema.statics.getUpcomingMeetings = async function(limit = 5, userFilter = {}) {
     const now = new Date();
-    return this.find({ 
+    return this.find({
+        ...userFilter, // Apply user filter if provided
         meetingDate: { $gte: now },
         status: { $in: ['Scheduled', 'Preparation'] }
     })
@@ -539,32 +393,26 @@ investorMeetingSchema.statics.getUpcomingMeetings = async function(limit = 5) {
     .select('title meetingDate meetingType investors preparation status');
 };
 
-/**
- * Static method to get meeting statistics
- */
-investorMeetingSchema.statics.getMeetingStatistics = async function(startDate, endDate) {
-    const query = {};
+investorMeetingSchema.statics.getMeetingStatistics = async function(startDate, endDate, userFilter = {}) {
+    const query = {...userFilter};
     if (startDate || endDate) {
         query.meetingDate = {};
         if (startDate) query.meetingDate.$gte = new Date(startDate);
         if (endDate) query.meetingDate.$lte = new Date(endDate);
     }
-    
+
     const totalMeetings = await this.countDocuments(query);
-    const completedMeetings = await this.countDocuments({
-        ...query,
-        status: 'Completed'
-    });
-    
+    const completedMeetings = await this.countDocuments({ ...query, status: 'Completed' });
+
     const aggregateResult = await this.aggregate([
-        { $match: query },
+        { $match: { ...query, status: 'Completed' } },
         { $group: {
             _id: null,
             avgEffectiveness: { $avg: '$meetingEffectiveness' },
             avgSentiment: { $avg: '$sentimentScore' }
         }}
     ]);
-    
+
     return {
         totalMeetings,
         completedMeetings,
@@ -573,12 +421,11 @@ investorMeetingSchema.statics.getMeetingStatistics = async function(startDate, e
     };
 };
 
-// Add indexes for common queries
 investorMeetingSchema.index({ meetingDate: 1, status: 1 });
 investorMeetingSchema.index({ 'investors.investorId': 1 });
 investorMeetingSchema.index({ relatedRoundId: 1 });
 investorMeetingSchema.index({ createdAt: -1 });
+investorMeetingSchema.index({ createdBy: 1 });
 
-// Create model
 const InvestorMeeting = mongoose.model('InvestorMeeting', investorMeetingSchema);
 module.exports = InvestorMeeting;

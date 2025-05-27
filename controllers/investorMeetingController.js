@@ -8,27 +8,39 @@ const Expense = require('../models/expenseModel');
 const Revenue = require('../models/revenueModel');
 const Round = require('../models/roundModel');
 const CustomKPI = require('../models/customKpiModel');
+const Document = require('../models/documentModel');
+const RunwayScenario = require('../models/runwayScenarioModel');
+const FundraisingPrediction = require('../models/fundraisingPredictionModel');
+const Budget = require('../models/budgetModel');
+const ManualKpiSnapshot = require('../models/manualKpiSnapshotModel'); // IMPORTANT: Import this
+
 const mongoose = require('mongoose');
 
 /**
- * Investor Meeting Controller
- * Handles all operations related to investor meetings, preparation, and follow-ups
+ * Helper function to format currency values
  */
+function formatCurrency(value) {
+    if (value === null || value === undefined || !isFinite(value)) return 'N/A';
+    if (Math.abs(value) >= 10000000) { // Crores
+        return `₹${(value / 10000000).toFixed(2)}Cr`;
+    } else if (Math.abs(value) >= 100000) { // Lakhs
+        return `₹${(value / 100000).toFixed(2)}L`;
+    }
+    return `₹${value.toFixed(2)}`;
+}
+
+
 const investorMeetingController = {
-    /**
-     * Create a new investor meeting
-     * @route POST /api/horizon/investor-meetings
-     * @access Private
-     */
+    // ... (createMeeting, getMeetings, getMeetingById, updateMeeting, deleteMeeting - remain unchanged from previous version) ...
     createMeeting: async (req, res) => {
         try {
             const {
                 title, meetingDate, duration, meetingType,
                 investors, internalParticipants, location,
-                meetingFormat, meetingLink, agenda
+                meetingFormat, meetingLink, agenda,
+                meetingSections
             } = req.body;
 
-            // Validate required fields
             if (!title || !meetingDate) {
                 return res.status(400).json({
                     success: false,
@@ -36,11 +48,9 @@ const investorMeetingController = {
                 });
             }
 
-            // Process investors array
             const processedInvestors = [];
             if (investors && Array.isArray(investors)) {
                 for (const inv of investors) {
-                    // If only investorId is provided, fetch investor details
                     if (inv.investorId && mongoose.Types.ObjectId.isValid(inv.investorId)) {
                         try {
                             const investorRecord = await Investor.findById(inv.investorId);
@@ -50,7 +60,7 @@ const investorMeetingController = {
                                     name: investorRecord.name,
                                     company: investorRecord.entityName,
                                     email: investorRecord.email,
-                                    attended: true
+                                    attended: inv.attended !== undefined ? inv.attended : true
                                 });
                                 continue;
                             }
@@ -58,13 +68,10 @@ const investorMeetingController = {
                             console.error('Error fetching investor:', err);
                         }
                     }
-                    
-                    // Add as provided if can't fetch or no ID provided
                     processedInvestors.push(inv);
                 }
             }
 
-            // Create new meeting
             const newMeeting = new InvestorMeeting({
                 title,
                 meetingDate,
@@ -81,39 +88,33 @@ const investorMeetingController = {
                     status: 'Not Started',
                     assignedTo: req.horizonUser.id
                 },
+                meetingSections: meetingSections || { // Default all sections to true
+                    financialSnapshot: true,
+                    teamUpdates: true,
+                    productMilestones: true,
+                    kpis: true,
+                    userMetrics: true, // NEW DEFAULT
+                    runwayScenario: true,
+                    fundraisingPrediction: true,
+                    budgetSummary: true,
+                    talkingPoints: true,
+                    suggestedDocuments: true
+                },
                 createdBy: req.horizonUser.id
             });
 
-            // Save to database
             const meeting = await newMeeting.save();
-
-            res.status(201).json({
-                success: true,
-                data: meeting
-            });
+            res.status(201).json({ success: true, data: meeting });
         } catch (err) {
             console.error('Error creating investor meeting:', err.message);
-            
             if (err.name === 'ValidationError') {
                 const messages = Object.values(err.errors).map(val => val.message);
-                return res.status(400).json({
-                    success: false,
-                    msg: messages.join(', ')
-                });
+                return res.status(400).json({ success: false, msg: messages.join(', ') });
             }
-
-            res.status(500).json({
-                success: false,
-                msg: 'Server Error: Could not create investor meeting'
-            });
+            res.status(500).json({ success: false, msg: 'Server Error: Could not create investor meeting' });
         }
     },
 
-    /**
-     * Get all investor meetings with optional filtering
-     * @route GET /api/horizon/investor-meetings
-     * @access Private
-     */
     getMeetings: async (req, res) => {
         try {
             const {
@@ -121,8 +122,7 @@ const investorMeetingController = {
                 sortBy = 'meetingDate', sortDir = 'desc', page = 1, limit = 20
             } = req.query;
 
-            // Build filter object
-            const filter = {};
+            const filter = { createdBy: req.horizonUser.id };
             if (status) {
                 if (status.includes(',')) {
                     filter.status = { $in: status.split(',') };
@@ -130,22 +130,18 @@ const investorMeetingController = {
                     filter.status = status;
                 }
             }
-            
             if (meetingType) filter.meetingType = meetingType;
-            
-            // Filter by investor ID
             if (investorId) {
-                filter['investors.investorId'] = mongoose.Types.ObjectId(investorId);
+                if (!mongoose.Types.ObjectId.isValid(investorId)) {
+                    return res.status(400).json({ success: false, msg: 'Invalid investorId format' });
+                }
+                filter['investors.investorId'] = new mongoose.Types.ObjectId(investorId);
             }
-            
-            // Filter by date range
             if (fromDate || toDate) {
                 filter.meetingDate = {};
                 if (fromDate) filter.meetingDate.$gte = new Date(fromDate);
                 if (toDate) filter.meetingDate.$lte = new Date(toDate);
             }
-            
-            // Text search (if provided)
             if (search) {
                 filter.$or = [
                     { title: { $regex: search, $options: 'i' } },
@@ -154,182 +150,113 @@ const investorMeetingController = {
                 ];
             }
 
-            // Calculate pagination
-            const skip = (page - 1) * limit;
-            
-            // Set sort order
+            const skip = (parseInt(page) - 1) * parseInt(limit);
             const sort = {};
             sort[sortBy] = sortDir === 'desc' ? -1 : 1;
 
-            // Execute query with pagination
             const meetings = await InvestorMeeting.find(filter)
                 .sort(sort)
                 .skip(skip)
                 .limit(parseInt(limit))
                 .populate('preparation.assignedTo', 'name')
                 .populate('investors.investorId', 'name entityName')
-                .select('-metricSnapshots -talkingPoints -feedbackItems -actionItems');
+                .select('-metricSnapshots -talkingPoints -feedbackItems -actionItems -financialSnapshot -teamUpdates -highlightedMilestones -highlightedKpis -linkedRunwayScenario -linkedFundraisingPrediction -budgetSummary -suggestedDocuments -userMetricsSnapshot');
 
-            // Get total count for pagination
             const total = await InvestorMeeting.countDocuments(filter);
 
             res.json({
                 success: true,
                 count: meetings.length,
                 total,
-                totalPages: Math.ceil(total / limit),
+                totalPages: Math.ceil(total / parseInt(limit)),
                 currentPage: parseInt(page),
                 data: meetings
             });
         } catch (err) {
             console.error('Error fetching investor meetings:', err.message);
-            res.status(500).json({
-                success: false,
-                msg: 'Server Error: Could not fetch investor meetings'
-            });
+            res.status(500).json({ success: false, msg: 'Server Error: Could not fetch investor meetings' });
         }
     },
 
-    /**
-     * Get a single investor meeting by ID
-     * @route GET /api/horizon/investor-meetings/:id
-     * @access Private
-     */
     getMeetingById: async (req, res) => {
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-                return res.status(400).json({
-                    success: false,
-                    msg: 'Invalid ID format'
-                });
+                return res.status(400).json({ success: false, msg: 'Invalid ID format' });
             }
-
-            const meeting = await InvestorMeeting.findById(req.params.id)
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id })
                 .populate('investors.investorId', 'name entityName contactPerson email')
                 .populate('internalParticipants.userId', 'name email')
                 .populate('preparation.assignedTo', 'name email')
-                .populate('highlightedKpis.kpiId', 'name displayName value')
-                .populate('highlightedMilestones.milestoneId', 'name status completionPercentage')
-                .populate('relatedDocuments')
+                .populate('highlightedKpis.kpiId', 'name displayName cache.currentValue cache.trend displayFormat')
+                .populate('highlightedMilestones.milestoneId', 'name status completionPercentage investorSummary plannedEndDate')
+                .populate('relatedDocuments', 'fileName category storageUrl')
+                .populate('suggestedDocuments.documentId', 'fileName category storageUrl')
                 .populate('previousMeetingId', 'title meetingDate')
                 .populate('nextMeetingId', 'title meetingDate')
-                .populate('relatedRoundId', 'name targetAmount');
+                .populate('relatedRoundId', 'name targetAmount')
+                .populate('linkedRunwayScenario.scenarioId', 'name totalRunwayMonths dateOfCashOut')
+                .populate('linkedFundraisingPrediction.predictionId', 'predictionName targetRoundSize predictedCloseDate overallProbability');
 
             if (!meeting) {
-                return res.status(404).json({
-                    success: false,
-                    msg: 'Investor meeting not found'
-                });
+                return res.status(404).json({ success: false, msg: 'Investor meeting not found or not authorized' });
             }
-
-            res.json({
-                success: true,
-                data: meeting
-            });
+            res.json({ success: true, data: meeting });
         } catch (err) {
             console.error('Error fetching investor meeting by ID:', err.message);
-            res.status(500).json({
-                success: false,
-                msg: 'Server Error: Could not fetch investor meeting'
-            });
+            res.status(500).json({ success: false, msg: 'Server Error: Could not fetch investor meeting' });
         }
     },
 
-    /**
-     * Update an investor meeting
-     * @route PUT /api/horizon/investor-meetings/:id
-     * @access Private
-     */
     updateMeeting: async (req, res) => {
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-                return res.status(400).json({
-                    success: false,
-                    msg: 'Invalid ID format'
-                });
+                return res.status(400).json({ success: false, msg: 'Invalid ID format' });
             }
-
-            const meeting = await InvestorMeeting.findById(req.params.id);
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
 
             if (!meeting) {
-                return res.status(404).json({
-                    success: false,
-                    msg: 'Investor meeting not found'
-                });
+                return res.status(404).json({ success: false, msg: 'Investor meeting not found or not authorized' });
             }
 
-            // Add updatedBy field
             req.body.updatedBy = req.horizonUser.id;
+            req.body.updatedAt = Date.now();
+
+            if (req.body.meetingSections) {
+                req.body.meetingSections = { ...meeting.meetingSections.toObject(), ...req.body.meetingSections };
+            }
 
             const updatedMeeting = await InvestorMeeting.findByIdAndUpdate(
                 req.params.id,
                 { $set: req.body },
                 { new: true, runValidators: true }
             );
-
-            res.json({
-                success: true,
-                data: updatedMeeting
-            });
+            res.json({ success: true, data: updatedMeeting });
         } catch (err) {
             console.error('Error updating investor meeting:', err.message);
-            
             if (err.name === 'ValidationError') {
                 const messages = Object.values(err.errors).map(val => val.message);
-                return res.status(400).json({
-                    success: false,
-                    msg: messages.join(', ')
-                });
+                return res.status(400).json({ success: false, msg: messages.join(', ') });
             }
-
-            res.status(500).json({
-                success: false,
-                msg: 'Server Error: Could not update investor meeting'
-            });
+            res.status(500).json({ success: false, msg: 'Server Error: Could not update investor meeting' });
         }
     },
 
-    /**
-     * Delete an investor meeting
-     * @route DELETE /api/horizon/investor-meetings/:id
-     * @access Private
-     */
     deleteMeeting: async (req, res) => {
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-                return res.status(400).json({
-                    success: false,
-                    msg: 'Invalid ID format'
-                });
+                return res.status(400).json({ success: false, msg: 'Invalid ID format' });
             }
-
-            const meeting = await InvestorMeeting.findById(req.params.id);
-
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
             if (!meeting) {
-                return res.status(404).json({
-                    success: false,
-                    msg: 'Investor meeting not found'
-                });
+                return res.status(404).json({ success: false, msg: 'Investor meeting not found or not authorized' });
             }
-
-            // Instead of hard delete, consider soft delete for important data
-            // For now, we'll do a hard delete
             await InvestorMeeting.findByIdAndDelete(req.params.id);
-
-            res.json({
-                success: true,
-                data: {},
-                msg: 'Investor meeting removed'
-            });
+            res.json({ success: true, data: {}, msg: 'Investor meeting removed' });
         } catch (err) {
             console.error('Error deleting investor meeting:', err.message);
-            res.status(500).json({
-                success: false,
-                msg: 'Server Error: Could not delete investor meeting'
-            });
+            res.status(500).json({ success: false, msg: 'Server Error: Could not delete investor meeting' });
         }
     },
-
     /**
      * Prepare meeting data (populate metrics, milestones, etc.)
      * @route POST /api/horizon/investor-meetings/:id/prepare
@@ -338,402 +265,274 @@ const investorMeetingController = {
     prepareMeeting: async (req, res) => {
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-                return res.status(400).json({
-                    success: false,
-                    msg: 'Invalid ID format'
-                });
+                return res.status(400).json({ success: false, msg: 'Invalid ID format' });
             }
 
-            const meeting = await InvestorMeeting.findById(req.params.id);
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
 
             if (!meeting) {
-                return res.status(404).json({
-                    success: false,
-                    msg: 'Investor meeting not found'
-                });
+                return res.status(404).json({ success: false, msg: 'Investor meeting not found or not authorized' });
             }
 
-            // Get previous meeting for comparison (if exists)
+            // User can specify which sections to include in the prep
+            const sectionsToInclude = {
+                ...(meeting.meetingSections ? meeting.meetingSections.toObject() : { // Default all to true if not set
+                    financialSnapshot: true, teamUpdates: true, productMilestones: true, kpis: true,
+                    userMetrics: true, runwayScenario: true, fundraisingPrediction: true,
+                    budgetSummary: true, talkingPoints: true, suggestedDocuments: true
+                }),
+                ...(req.body.sectionsToInclude || {}) // Override with request body
+            };
+            meeting.meetingSections = sectionsToInclude; // Store the final selection
+
             let previousMeeting = null;
             if (meeting.previousMeetingId) {
                 previousMeeting = await InvestorMeeting.findById(meeting.previousMeetingId);
             } else {
-                // Find the most recent completed meeting before this one
                 previousMeeting = await InvestorMeeting.findOne({
                     meetingDate: { $lt: meeting.meetingDate },
-                    status: 'Completed'
+                    status: 'Completed',
+                    createdBy: req.horizonUser.id
                 }).sort({ meetingDate: -1 });
-                
-                if (previousMeeting) {
-                    meeting.previousMeetingId = previousMeeting._id;
-                }
+                if (previousMeeting) meeting.previousMeetingId = previousMeeting._id;
             }
 
-            // --- Gather Financial Data ---
-            // Get current financial data
-            const bankAccounts = await BankAccount.find();
-            const totalCash = bankAccounts.reduce((sum, acc) => sum + acc.currentBalance, 0);
-            
-            // Calculate burn rate (last 3 months average)
             const threeMonthsAgo = new Date();
             threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-            
-            const recentExpenses = await Expense.aggregate([
-                { $match: { date: { $gte: threeMonthsAgo } } },
-                { $group: { 
-                    _id: { 
-                        year: { $year: "$date" }, 
-                        month: { $month: "$date" } 
-                    },
-                    total: { $sum: "$amount" }
-                }}
-            ]);
-            
-            const monthlyBurn = recentExpenses.length > 0 
-                ? recentExpenses.reduce((sum, e) => sum + e.total, 0) / recentExpenses.length 
-                : 0;
-            
-            // Calculate runway
-            const runway = monthlyBurn > 0 ? totalCash / monthlyBurn : 0;
-            
-            // Get revenue data
-            const recentRevenue = await Revenue.aggregate([
-                { $match: { date: { $gte: threeMonthsAgo } } },
-                { $group: { 
-                    _id: { 
-                        year: { $year: "$date" }, 
-                        month: { $month: "$date" } 
-                    },
-                    total: { $sum: "$amount" }
-                }}
-            ]);
-            
-            const monthlyRevenue = recentRevenue.length > 0 
-                ? recentRevenue.reduce((sum, r) => sum + r.total, 0) / recentRevenue.length 
-                : 0;
-            
-            // Get total funds raised
-            const rounds = await Round.find();
-            const totalFundsRaised = rounds.reduce((sum, r) => sum + r.totalFundsReceived, 0);
-            
-            // Update financial snapshot
-            meeting.financialSnapshot = {
-                cashBalance: totalCash,
-                monthlyBurn: monthlyBurn,
-                runway: Math.round(runway * 10) / 10, // Round to 1 decimal place
-                mrr: monthlyRevenue,
-                arr: monthlyRevenue * 12,
-                totalFundsRaised
-            };
 
-            // --- Gather Team Data ---
-            // Get current headcount data
-            const activeEmployees = await Headcount.find({ status: 'Active' });
-            const openPositions = await Headcount.countDocuments({ 
-                status: { $in: ['Open Requisition', 'Interviewing', 'Offer Extended'] } 
-            });
-            
-            // Get new hires since last meeting
-            const newHires = await Headcount.find({
-                status: 'Active',
-                startDate: { $gte: previousMeeting ? previousMeeting.meetingDate : threeMonthsAgo }
-            }).select('name title department startDate');
-            
-            // Get departures since last meeting
-            const departures = await Headcount.find({
-                status: 'Former',
-                endDate: { $gte: previousMeeting ? previousMeeting.meetingDate : threeMonthsAgo }
-            }).select('name title department endDate');
-            
-            // Update team updates
-            meeting.teamUpdates = {
-                currentHeadcount: activeEmployees.length,
-                newHires: newHires.map(hire => ({
-                    headcountId: hire._id,
-                    name: hire.name,
-                    role: hire.title,
-                    department: hire.department
-                })),
-                openPositions,
-                keyDepartures: departures.map(departure => ({
-                    name: departure.name,
-                    role: departure.title,
-                    impactOnBusiness: `${departure.title} left on ${departure.endDate.toISOString().split('T')[0]}`
-                }))
-            };
+            // --- Financial Snapshot ---
+            if (sectionsToInclude.financialSnapshot) {
+                const bankAccounts = await BankAccount.find({ /* createdBy: req.horizonUser.id */ });
+                const totalCash = bankAccounts.reduce((sum, acc) => sum + (acc.currentBalance || 0), 0);
 
-            // --- Gather Product Milestones ---
-            // Get highlighted milestones (completed recently and upcoming)
-            const recentlyCompletedMilestones = await ProductMilestone.find({
-                status: 'Completed',
-                actualEndDate: { $gte: previousMeeting ? previousMeeting.meetingDate : threeMonthsAgo },
-                visibleToInvestors: true
-            }).select('name status completionPercentage actualEndDate');
-            
-            const upcomingMilestones = await ProductMilestone.find({
-                status: { $nin: ['Completed', 'Cancelled'] },
-                plannedEndDate: { $gte: new Date() },
-                visibleToInvestors: true
-            }).sort({ plannedEndDate: 1 }).limit(5)
-            .select('name status completionPercentage plannedEndDate');
-            
-            // Update highlighted milestones
-            meeting.highlightedMilestones = [
-                ...recentlyCompletedMilestones.map(m => ({
-                    milestoneId: m._id,
-                    milestoneName: m.name,
-                    status: m.status,
-                    completionPercentage: m.completionPercentage
-                })),
-                ...upcomingMilestones.map(m => ({
-                    milestoneId: m._id,
-                    milestoneName: m.name,
-                    status: m.status,
-                    completionPercentage: m.completionPercentage
-                }))
-            ];
+                const recentExpenses = await Expense.aggregate([
+                    { $match: { date: { $gte: threeMonthsAgo } /* , createdBy: req.horizonUser.id */ } },
+                    { $group: { _id: { year: { $year: "$date" }, month: { $month: "$date" } }, total: { $sum: "$amount" } } }
+                ]);
+                const monthlyBurn = recentExpenses.length > 0 ? recentExpenses.reduce((sum, e) => sum + e.total, 0) / recentExpenses.length : 0;
+                const runway = monthlyBurn > 0 ? totalCash / monthlyBurn : Infinity;
 
-            // --- Gather KPIs ---
-            // Get KPIs to highlight
-            const keyKpis = await CustomKPI.find({ 
-                isActive: true, 
-                isPinned: true 
-            }).limit(10);
-            
-            // Update highlighted KPIs
-            meeting.highlightedKpis = keyKpis.map(kpi => ({
-                kpiId: kpi._id,
-                kpiName: kpi.displayName || kpi.name
-            }));
+                const recentRevenue = await Revenue.aggregate([
+                    { $match: { date: { $gte: threeMonthsAgo } /* , createdBy: req.horizonUser.id */ } },
+                    { $group: { _id: { year: { $year: "$date" }, month: { $month: "$date" } }, total: { $sum: "$amount" } } }
+                ]);
+                const monthlyRevenue = recentRevenue.length > 0 ? recentRevenue.reduce((sum, r) => sum + r.total, 0) / recentRevenue.length : 0;
 
-            // --- Create Metric Snapshots ---
-            // Financial metrics
-            const financialMetrics = [
-                {
-                    category: 'Financial',
-                    name: 'Cash Balance',
-                    value: totalCash,
-                    previousValue: previousMeeting?.financialSnapshot?.cashBalance,
-                    format: 'currency',
-                    highlight: true,
-                    order: 1
-                },
-                {
-                    category: 'Financial',
-                    name: 'Monthly Burn',
-                    value: monthlyBurn,
-                    previousValue: previousMeeting?.financialSnapshot?.monthlyBurn,
-                    format: 'currency',
-                    highlight: true,
-                    order: 2
-                },
-                {
-                    category: 'Financial',
-                    name: 'Runway',
-                    value: runway,
-                    previousValue: previousMeeting?.financialSnapshot?.runway,
-                    format: 'number',
-                    contextNote: 'Months remaining at current burn rate',
-                    highlight: true,
-                    order: 3
-                },
-                {
-                    category: 'Financial',
-                    name: 'Monthly Recurring Revenue',
-                    value: monthlyRevenue,
-                    previousValue: previousMeeting?.financialSnapshot?.mrr,
-                    format: 'currency',
-                    highlight: monthlyRevenue > 0,
-                    order: 4
-                }
-            ];
-            
-            // Team metrics
-            const teamMetrics = [
-                {
-                    category: 'Team',
-                    name: 'Headcount',
-                    value: activeEmployees.length,
-                    previousValue: previousMeeting?.teamUpdates?.currentHeadcount,
-                    format: 'number',
-                    highlight: true,
-                    order: 1
-                },
-                {
-                    category: 'Team',
-                    name: 'Open Positions',
-                    value: openPositions,
-                    previousValue: null,
-                    format: 'number',
-                    highlight: openPositions > 0,
-                    order: 2
-                },
-                {
-                    category: 'Team',
-                    name: 'New Hires',
-                    value: newHires.length,
-                    previousValue: null,
-                    format: 'number',
-                    contextNote: 'Since last meeting',
-                    highlight: newHires.length > 0,
-                    order: 3
-                }
-            ];
-            
-            // Product metrics
-            const productMetrics = [
-                {
-                    category: 'Product',
-                    name: 'Completed Milestones',
-                    value: recentlyCompletedMilestones.length,
-                    previousValue: null,
-                    format: 'number',
-                    contextNote: 'Since last meeting',
-                    highlight: recentlyCompletedMilestones.length > 0,
-                    order: 1
-                },
-                {
-                    category: 'Product',
-                    name: 'Upcoming Milestones',
-                    value: upcomingMilestones.length,
-                    previousValue: null,
-                    format: 'number',
-                    highlight: true,
-                    order: 2
-                }
-            ];
-            
-            // Calculate trend for each metric
-            const calculateTrend = (current, previous) => {
-                if (previous === null || previous === undefined || current === previous) {
-                    return 'flat';
-                }
-                return current > previous ? 'up' : 'down';
-            };
-            
-            const calculateChangePercentage = (current, previous) => {
-                if (previous === null || previous === undefined || previous === 0) {
-                    return null;
-                }
-                return ((current - previous) / previous) * 100;
-            };
-            
-            // Process all metrics
-            const allMetrics = [...financialMetrics, ...teamMetrics, ...productMetrics];
-            allMetrics.forEach(metric => {
-                metric.trend = calculateTrend(metric.value, metric.previousValue);
-                metric.changePercentage = calculateChangePercentage(metric.value, metric.previousValue);
-            });
-            
-            // Update meeting metrics
-            meeting.metricSnapshots = allMetrics;
+                const rounds = await Round.find({ /* createdBy: req.horizonUser.id */ });
+                const totalFundsRaised = rounds.reduce((sum, r) => sum + (r.totalFundsReceived || 0), 0);
 
-            // --- Create Talking Points ---
-            // Generate automatic talking points based on data
-            const talkingPoints = [];
-            
-            // Financial talking points
-            if (runway < 6) {
-                talkingPoints.push({
-                    title: 'Runway Update',
-                    category: 'Challenge',
-                    content: `Current runway is ${runway.toFixed(1)} months. We are implementing cost-saving measures and accelerating revenue growth to extend runway.`,
-                    priority: 1,
-                    relatedMetrics: ['Cash Balance', 'Monthly Burn', 'Runway']
-                });
-            } else if (runway > 12) {
-                talkingPoints.push({
-                    title: 'Strong Cash Position',
-                    category: 'Win',
-                    content: `We have a healthy runway of ${runway.toFixed(1)} months, allowing us to focus on long-term growth initiatives.`,
-                    priority: 3,
-                    relatedMetrics: ['Cash Balance', 'Runway']
-                });
+                meeting.financialSnapshot = {
+                    cashBalance: totalCash,
+                    monthlyBurn: monthlyBurn,
+                    runway: isFinite(runway) ? Math.round(runway * 10) / 10 : null,
+                    mrr: monthlyRevenue,
+                    arr: monthlyRevenue * 12,
+                    totalFundsRaised
+                };
             }
-            
-            if (monthlyRevenue > 0 && (previousMeeting?.financialSnapshot?.mrr || 0) < monthlyRevenue) {
-                talkingPoints.push({
-                    title: 'Revenue Growth',
-                    category: 'Win',
-                    content: `We've seen strong revenue growth, with MRR now at ${formatCurrency(monthlyRevenue)}.`,
-                    priority: 2,
-                    relatedMetrics: ['Monthly Recurring Revenue']
-                });
-            }
-            
-            // Team talking points
-            if (newHires.length > 0) {
-                talkingPoints.push({
-                    title: 'Team Growth',
-                    category: 'Update',
-                    content: `We've added ${newHires.length} new team members since our last meeting, strengthening our ${newHires.map(h => h.department).filter((v, i, a) => a.indexOf(v) === i).join(', ')} departments.`,
-                    priority: 3,
-                    relatedMetrics: ['Headcount', 'New Hires']
-                });
-            }
-            
-            // Product talking points
-            if (recentlyCompletedMilestones.length > 0) {
-                talkingPoints.push({
-                    title: 'Product Milestones Achieved',
-                    category: 'Win',
-                    content: `We've completed ${recentlyCompletedMilestones.length} key milestones: ${recentlyCompletedMilestones.map(m => m.name).join(', ')}.`,
-                    priority: 2,
-                    relatedMetrics: ['Completed Milestones']
-                });
-            }
-            
-            if (upcomingMilestones.length > 0) {
-                talkingPoints.push({
-                    title: 'Upcoming Product Milestones',
-                    category: 'Update',
-                    content: `Our focus for the coming period is on: ${upcomingMilestones.map(m => m.name).join(', ')}.`,
-                    priority: 2,
-                    relatedMetrics: ['Upcoming Milestones']
-                });
-            }
-            
-            // Add talking points to meeting
-            meeting.talkingPoints = talkingPoints;
 
-            // Update preparation status
+            // --- Team Updates ---
+            if (sectionsToInclude.teamUpdates) {
+                const activeEmployees = await Headcount.find({ status: 'Active' /* , createdBy: req.horizonUser.id */ });
+                const openPositions = await Headcount.countDocuments({ status: { $in: ['Open Requisition', 'Interviewing', 'Offer Extended'] } /* , createdBy: req.horizonUser.id */ });
+                const newHires = await Headcount.find({
+                    status: 'Active',
+                    startDate: { $gte: previousMeeting ? previousMeeting.meetingDate : threeMonthsAgo }
+                    /* , createdBy: req.horizonUser.id */
+                }).select('name title department startDate');
+                const departures = await Headcount.find({
+                    status: 'Former',
+                    endDate: { $gte: previousMeeting ? previousMeeting.meetingDate : threeMonthsAgo }
+                    /* , createdBy: req.horizonUser.id */
+                }).select('name title department endDate');
+
+                meeting.teamUpdates = {
+                    currentHeadcount: activeEmployees.length,
+                    newHires: newHires.map(h => ({ headcountId: h._id, name: h.name, role: h.title, department: h.department })),
+                    openPositions,
+                    keyDepartures: departures.map(d => ({ name: d.name, role: d.title, impactOnBusiness: `${d.title} left on ${d.endDate?.toISOString().split('T')[0] || 'N/A'}` }))
+                };
+            }
+
+            // --- Product Milestones ---
+            if (sectionsToInclude.productMilestones) {
+                const recentlyCompletedMilestones = await ProductMilestone.find({
+                    status: 'Completed',
+                    actualEndDate: { $gte: previousMeeting ? previousMeeting.meetingDate : threeMonthsAgo },
+                    visibleToInvestors: true,
+                    createdBy: req.horizonUser.id
+                }).select('name status completionPercentage actualEndDate investorSummary plannedEndDate');
+                const upcomingMilestones = await ProductMilestone.find({
+                    status: { $nin: ['Completed', 'Cancelled'] },
+                    plannedEndDate: { $gte: new Date() },
+                    visibleToInvestors: true,
+                    createdBy: req.horizonUser.id
+                }).sort({ plannedEndDate: 1 }).limit(5)
+                .select('name status completionPercentage plannedEndDate investorSummary');
+
+                meeting.highlightedMilestones = [
+                    ...recentlyCompletedMilestones.map(m => ({ milestoneId: m._id, milestoneName: m.name, status: m.status, completionPercentage: m.completionPercentage, investorSummary: m.investorSummary, plannedEndDate: m.plannedEndDate })),
+                    ...upcomingMilestones.map(m => ({ milestoneId: m._id, milestoneName: m.name, status: m.status, completionPercentage: m.completionPercentage, investorSummary: m.investorSummary, plannedEndDate: m.plannedEndDate }))
+                ];
+            }
+
+            // --- KPIs (Custom Pinned KPIs) ---
+            if (sectionsToInclude.kpis) {
+                const keyKpis = await CustomKPI.find({
+                    isActive: true,
+                    isPinned: true,
+                    createdBy: req.horizonUser.id
+                }).limit(10).select('name displayName cache displayFormat');
+
+                meeting.highlightedKpis = keyKpis.map(kpi => ({
+                    kpiId: kpi._id,
+                    kpiName: kpi.displayName || kpi.name,
+                    value: kpi.cache?.currentValue,
+                    formattedValue: kpi.cache?.currentValue !== undefined && kpi.displayFormat ? formatCurrency(kpi.cache.currentValue) : 'N/A',
+                    trend: kpi.cache?.trend,
+                    target: kpi.cache?.historicalValues?.slice(-1)[0]?.target
+                }));
+            }
+
+            // --- User Metrics (from ManualKpiSnapshot) --- NEW SECTION
+            if (sectionsToInclude.userMetrics) {
+                const latestSnapshot = await ManualKpiSnapshot.findOne({ /* enteredBy: req.horizonUser.id */ }).sort({ snapshotDate: -1 });
+                if (latestSnapshot) {
+                    meeting.userMetricsSnapshot = {
+                        snapshotDate: latestSnapshot.snapshotDate,
+                        dau: latestSnapshot.dau,
+                        mau: latestSnapshot.mau,
+                        totalRegisteredUsers: latestSnapshot.totalRegisteredUsers,
+                        newUsersToday: latestSnapshot.newUsersToday,
+                        dauMauRatio: latestSnapshot.mau && latestSnapshot.dau ? ((latestSnapshot.dau / latestSnapshot.mau) * 100).toFixed(2) + '%' : 'N/A',
+                    };
+                } else {
+                    meeting.userMetricsSnapshot = null; // Or some default empty state
+                }
+            }
+
+
+            // --- Runway Scenario ---
+            if (sectionsToInclude.runwayScenario) {
+                const latestScenario = await RunwayScenario.findOne({ createdBy: req.horizonUser.id, isActive: true }).sort({ createdAt: -1 });
+                if (latestScenario) {
+                    meeting.linkedRunwayScenario = {
+                        scenarioId: latestScenario._id,
+                        name: latestScenario.name,
+                        totalRunwayMonths: latestScenario.totalRunwayMonths,
+                        cashOutDate: latestScenario.dateOfCashOut,
+                    };
+                } else {
+                     meeting.linkedRunwayScenario = null;
+                }
+            }
+
+            // --- Fundraising Prediction ---
+            if (sectionsToInclude.fundraisingPrediction) {
+                const latestPrediction = await FundraisingPrediction.findOne({ createdBy: req.horizonUser.id }).sort({ createdAt: -1 });
+                if (latestPrediction) {
+                    meeting.linkedFundraisingPrediction = {
+                        predictionId: latestPrediction._id,
+                        name: latestPrediction.predictionName,
+                        targetRoundSize: latestPrediction.targetRoundSize,
+                        predictedCloseDate: latestPrediction.predictedCloseDate,
+                        overallProbability: latestPrediction.overallProbability,
+                    };
+                } else {
+                    meeting.linkedFundraisingPrediction = null;
+                }
+            }
+
+            // --- Budget Summary ---
+            if (sectionsToInclude.budgetSummary) {
+                const relevantBudget = await Budget.findOne({
+                    createdBy: req.horizonUser.id,
+                    status: 'Active',
+                    periodStartDate: { $lte: meeting.meetingDate },
+                    periodEndDate: { $gte: meeting.meetingDate }
+                }).sort({ periodStartDate: -1 });
+
+                if (relevantBudget) {
+                    const actualExpenses = await Expense.aggregate([
+                        { $match: { date: { $gte: relevantBudget.periodStartDate, $lte: relevantBudget.periodEndDate } /* , createdBy: req.horizonUser.id */ } },
+                        { $group: { _id: "$category", actualSpent: { $sum: "$amount" } } }
+                    ]);
+                    const totalActualSpent = actualExpenses.reduce((sum, exp) => sum + exp.actualSpent, 0);
+                    meeting.budgetSummary = {
+                        budgetName: relevantBudget.name,
+                        period: `${relevantBudget.periodStartDate.toLocaleDateString()} - ${relevantBudget.periodEndDate.toLocaleDateString()}`,
+                        totalBudgeted: relevantBudget.totalBudgetedAmount,
+                        totalActualSpent: totalActualSpent,
+                        totalVariance: relevantBudget.totalBudgetedAmount - totalActualSpent,
+                        topCategoryVariances: relevantBudget.items.slice(0,3).map(item => {
+                             const actual = actualExpenses.find(exp => exp._id === item.category);
+                             const actualSpentVal = actual ? actual.actualSpent : 0;
+                             return { category: item.category, budgeted: item.budgetedAmount, actual: actualSpentVal, variance: item.budgetedAmount - actualSpentVal};
+                        })
+                    };
+                } else {
+                     meeting.budgetSummary = null;
+                }
+            }
+
+            // --- Suggested Documents ---
+            if (sectionsToInclude.suggestedDocuments) {
+                const pitchDeck = await Document.findOne({ createdBy: req.horizonUser.id, category: 'Pitch Deck' }).sort({ createdAt: -1 });
+                const financialModel = await Document.findOne({ createdBy: req.horizonUser.id, tags: { $in: ['Financial Model', 'Forecast'] } }).sort({ createdAt: -1 });
+                meeting.suggestedDocuments = [];
+                if (pitchDeck) meeting.suggestedDocuments.push({ documentId: pitchDeck._id, fileName: pitchDeck.fileName, category: pitchDeck.category, reason: "Latest Pitch Deck" });
+                if (financialModel) meeting.suggestedDocuments.push({ documentId: financialModel._id, fileName: financialModel.fileName, category: financialModel.category, reason: "Latest Financial Model" });
+            }
+
+
+            // Auto-generate talking points if the section is included
+            if (sectionsToInclude.talkingPoints) {
+                const talkingPoints = [];
+                if (meeting.financialSnapshot && meeting.financialSnapshot.runway < 6) {
+                    talkingPoints.push({
+                        title: 'Runway Status', category: 'Challenge',
+                        content: `Current runway is ${meeting.financialSnapshot.runway.toFixed(1)} months. Discussing strategies to extend.`,
+                        priority: 1
+                    });
+                }
+                if (meeting.highlightedMilestones?.some(m => m.status !== 'Completed' && new Date(m.plannedEndDate) < new Date())) {
+                     talkingPoints.push({
+                        title: 'Delayed Milestones', category: 'Challenge',
+                        content: `Some key milestones are currently delayed. Addressing roadblocks.`,
+                        priority: 2
+                    });
+                }
+                // Add talking point for user metrics if significant change or notable value
+                if(meeting.userMetricsSnapshot && meeting.userMetricsSnapshot.mau > 0) {
+                     talkingPoints.push({
+                        title: 'User Engagement', category: 'Update',
+                        content: `MAU at ${meeting.userMetricsSnapshot.mau}, DAU at ${meeting.userMetricsSnapshot.dau}. Ratio: ${meeting.userMetricsSnapshot.dauMauRatio}.`,
+                        priority: 3
+                    });
+                }
+                meeting.talkingPoints = talkingPoints;
+            }
+
+
             meeting.preparation = {
                 ...meeting.preparation,
                 status: 'Ready',
                 dataCollectionComplete: true,
-                preparationNotes: 'Auto-prepared with current metrics and key talking points.',
+                preparationNotes: 'Auto-prepared with selected data sections.',
                 assignedTo: req.horizonUser.id
             };
-            
-            // Update meeting status if needed
-            if (meeting.status === 'Scheduled') {
-                meeting.status = 'Preparation';
-            }
-            
+            if (meeting.status === 'Scheduled') meeting.status = 'Preparation';
             meeting.updatedBy = req.horizonUser.id;
 
-            // Save the meeting with all prepared data
             await meeting.save();
+            res.json({ success: true, data: meeting, msg: 'Meeting preparation completed successfully' });
 
-            res.json({
-                success: true,
-                data: meeting,
-                msg: 'Meeting preparation completed successfully'
-            });
         } catch (err) {
-            console.error('Error preparing meeting:', err.message);
-            res.status(500).json({
-                success: false,
-                msg: 'Server Error: Could not prepare meeting'
-            });
+            console.error('Error preparing meeting:', err.message, err.stack);
+            res.status(500).json({ success: false, msg: 'Server Error: Could not prepare meeting' });
         }
     },
-
-    /**
-     * Add a talking point to a meeting
-     * @route POST /api/horizon/investor-meetings/:id/talking-points
-     * @access Private
-     */
+    // ... (addTalkingPoint, updateMeetingNotes, addFeedback, addActionItem, updateActionItem, completeMeeting, getMeetingStatistics - remain unchanged)
     addTalkingPoint: async (req, res) => {
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -752,16 +551,16 @@ const investorMeetingController = {
                 });
             }
 
-            const meeting = await InvestorMeeting.findById(req.params.id);
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
+
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found'
+                    msg: 'Investor meeting not found or not authorized'
                 });
             }
 
-            // Create new talking point
             const newTalkingPoint = {
                 title,
                 category: category || 'Update',
@@ -771,7 +570,6 @@ const investorMeetingController = {
                 wasDiscussed: false
             };
 
-            // Add talking point to meeting
             meeting.talkingPoints.push(newTalkingPoint);
             meeting.updatedBy = req.horizonUser.id;
 
@@ -791,11 +589,6 @@ const investorMeetingController = {
         }
     },
 
-    /**
-     * Update meeting notes and summary
-     * @route PATCH /api/horizon/investor-meetings/:id/notes
-     * @access Private
-     */
     updateMeetingNotes: async (req, res) => {
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -807,19 +600,19 @@ const investorMeetingController = {
 
             const { notes, summary } = req.body;
 
-            const meeting = await InvestorMeeting.findById(req.params.id);
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
+
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found'
+                    msg: 'Investor meeting not found or not authorized'
                 });
             }
 
-            // Update notes and summary
             if (notes !== undefined) meeting.notes = notes;
             if (summary !== undefined) meeting.summary = summary;
-            
+
             meeting.updatedBy = req.horizonUser.id;
 
             await meeting.save();
@@ -841,11 +634,6 @@ const investorMeetingController = {
         }
     },
 
-    /**
-     * Add investor feedback
-     * @route POST /api/horizon/investor-meetings/:id/feedback
-     * @access Private
-     */
     addFeedback: async (req, res) => {
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -864,16 +652,16 @@ const investorMeetingController = {
                 });
             }
 
-            const meeting = await InvestorMeeting.findById(req.params.id);
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
+
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found'
+                    msg: 'Investor meeting not found or not authorized'
                 });
             }
 
-            // Create new feedback item
             const newFeedback = {
                 topic,
                 feedback,
@@ -882,11 +670,9 @@ const investorMeetingController = {
                 requiringAction: requiringAction || false
             };
 
-            // Add feedback to meeting
             meeting.feedbackItems.push(newFeedback);
             meeting.updatedBy = req.horizonUser.id;
 
-            // Update status to Completed if not already
             if (meeting.status === 'Scheduled' || meeting.status === 'Preparation') {
                 meeting.status = 'Completed';
             }
@@ -907,11 +693,6 @@ const investorMeetingController = {
         }
     },
 
-    /**
-     * Add action item
-     * @route POST /api/horizon/investor-meetings/:id/action-items
-     * @access Private
-     */
     addActionItem: async (req, res) => {
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -930,16 +711,16 @@ const investorMeetingController = {
                 });
             }
 
-            const meeting = await InvestorMeeting.findById(req.params.id);
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
+
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found'
+                    msg: 'Investor meeting not found or not authorized'
                 });
             }
 
-            // Create new action item
             const newActionItem = {
                 action,
                 assignee: assignee || req.horizonUser.id,
@@ -948,7 +729,6 @@ const investorMeetingController = {
                 notes
             };
 
-            // Add action item to meeting
             meeting.actionItems.push(newActionItem);
             meeting.updatedBy = req.horizonUser.id;
 
@@ -968,14 +748,9 @@ const investorMeetingController = {
         }
     },
 
-    /**
-     * Update action item status
-     * @route PATCH /api/horizon/investor-meetings/:id/action-items/:actionId
-     * @access Private
-     */
     updateActionItem: async (req, res) => {
         try {
-            if (!mongoose.Types.ObjectId.isValid(req.params.id) || 
+            if (!mongoose.Types.ObjectId.isValid(req.params.id) ||
                 !mongoose.Types.ObjectId.isValid(req.params.actionId)) {
                 return res.status(400).json({
                     success: false,
@@ -985,50 +760,45 @@ const investorMeetingController = {
 
             const { status, notes } = req.body;
 
-            const meeting = await InvestorMeeting.findById(req.params.id);
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found'
+                    msg: 'Investor meeting not found or not authorized'
                 });
             }
+            
+            const actionItem = meeting.actionItems.id(req.params.actionId);
 
-            // Find action item
-            const actionIndex = meeting.actionItems.findIndex(
-                item => item._id.toString() === req.params.actionId
-            );
 
-            if (actionIndex === -1) {
+            if (!actionItem) {
                 return res.status(404).json({
                     success: false,
                     msg: 'Action item not found'
                 });
             }
 
-            // Update action item
             if (status !== undefined) {
-                meeting.actionItems[actionIndex].status = status;
-                
-                // Set completedDate if status is Completed
+                actionItem.status = status;
                 if (status === 'Completed') {
-                    meeting.actionItems[actionIndex].completedDate = new Date();
+                    actionItem.completedDate = new Date();
                 } else {
-                    meeting.actionItems[actionIndex].completedDate = undefined;
+                    actionItem.completedDate = undefined;
                 }
             }
-            
+
             if (notes !== undefined) {
-                meeting.actionItems[actionIndex].notes = notes;
+                actionItem.notes = notes;
             }
-            
+
             meeting.updatedBy = req.horizonUser.id;
 
             await meeting.save();
 
             res.json({
                 success: true,
-                data: meeting.actionItems[actionIndex],
+                data: actionItem,
                 msg: 'Action item updated successfully'
             });
         } catch (err) {
@@ -1040,11 +810,6 @@ const investorMeetingController = {
         }
     },
 
-    /**
-     * Complete a meeting and add effectiveness rating
-     * @route POST /api/horizon/investor-meetings/:id/complete
-     * @access Private
-     */
     completeMeeting: async (req, res) => {
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -1056,16 +821,16 @@ const investorMeetingController = {
 
             const { meetingEffectiveness, sentimentScore, nextSteps } = req.body;
 
-            const meeting = await InvestorMeeting.findById(req.params.id);
+            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
+
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found'
+                    msg: 'Investor meeting not found or not authorized'
                 });
             }
 
-            // Update meeting completion data
             meeting.status = 'Completed';
             meeting.meetingEffectiveness = meetingEffectiveness;
             meeting.sentimentScore = sentimentScore;
@@ -1074,20 +839,23 @@ const investorMeetingController = {
 
             await meeting.save();
 
-            // Schedule next meeting if requested
             if (req.body.scheduleNextMeeting) {
                 try {
-                    // Calculate next meeting date (default: 30 days from this meeting)
                     const nextMeetingDate = new Date(meeting.meetingDate);
                     nextMeetingDate.setDate(nextMeetingDate.getDate() + 30);
-                    
-                    // Create next meeting
+
                     const nextMeeting = new InvestorMeeting({
                         title: `Follow-up: ${meeting.title}`,
                         meetingDate: nextMeetingDate,
                         duration: meeting.duration,
                         meetingType: meeting.meetingType,
-                        investors: meeting.investors,
+                        investors: meeting.investors.map(inv => ({
+                            investorId: inv.investorId,
+                            name: inv.name,
+                            company: inv.company,
+                            email: inv.email,
+                            attended: true
+                        })),
                         internalParticipants: meeting.internalParticipants,
                         meetingFormat: meeting.meetingFormat,
                         status: 'Scheduled',
@@ -1095,13 +863,11 @@ const investorMeetingController = {
                         relatedRoundId: meeting.relatedRoundId,
                         createdBy: req.horizonUser.id
                     });
-                    
+
                     await nextMeeting.save();
-                    
-                    // Update current meeting with link to next
                     meeting.nextMeetingId = nextMeeting._id;
                     await meeting.save();
-                    
+
                     return res.json({
                         success: true,
                         data: {
@@ -1112,7 +878,6 @@ const investorMeetingController = {
                     });
                 } catch (nextErr) {
                     console.error('Error scheduling next meeting:', nextErr);
-                    // Continue with completion even if next meeting fails
                 }
             }
 
@@ -1130,43 +895,42 @@ const investorMeetingController = {
         }
     },
 
-    /**
-     * Get meeting statistics
-     * @route GET /api/horizon/investor-meetings/statistics
-     * @access Private
-     */
     getMeetingStatistics: async (req, res) => {
         try {
             const { fromDate, toDate } = req.query;
-            
-            // Get statistics with optional date range
-            const stats = await InvestorMeeting.getMeetingStatistics(fromDate, toDate);
-            
-            // Get upcoming meetings
-            const upcomingMeetings = await InvestorMeeting.getUpcomingMeetings(5);
-            
-            // Get action items statistics
+            const userFilter = { createdBy: req.horizonUser.id };
+
+
+            const stats = await InvestorMeeting.getMeetingStatistics(
+                fromDate ? new Date(fromDate) : null,
+                toDate ? new Date(toDate) : null,
+                userFilter
+            );
+
+            const upcomingMeetings = await InvestorMeeting.getUpcomingMeetings(5, userFilter);
+
+
             const pendingActionItems = await InvestorMeeting.aggregate([
-                { $match: { 'actionItems.status': { $ne: 'Completed' } } },
+                { $match: { ...userFilter, 'actionItems.status': { $ne: 'Completed' } } },
                 { $unwind: '$actionItems' },
                 { $match: { 'actionItems.status': { $ne: 'Completed' } } },
-                { $group: { 
-                    _id: '$actionItems.status', 
-                    count: { $sum: 1 } 
+                { $group: {
+                    _id: '$actionItems.status',
+                    count: { $sum: 1 }
                 }},
                 { $sort: { _id: 1 } }
             ]);
-            
-            // Get investor feedback statistics
+
             const feedbackByType = await InvestorMeeting.aggregate([
+                { $match: userFilter },
                 { $unwind: '$feedbackItems' },
-                { $group: { 
-                    _id: '$feedbackItems.feedbackType', 
-                    count: { $sum: 1 } 
+                { $group: {
+                    _id: '$feedbackItems.feedbackType',
+                    count: { $sum: 1 }
                 }},
                 { $sort: { _id: 1 } }
             ]);
-            
+
             res.json({
                 success: true,
                 data: {
@@ -1185,20 +949,5 @@ const investorMeetingController = {
         }
     }
 };
-
-/**
- * Helper function to format currency values
- * @param {Number} value - The value to format
- * @returns {String} - Formatted currency string
- */
-function formatCurrency(value) {
-    if (value >= 100000) {
-        return `₹${(value / 100000).toFixed(2)}L`;
-    } else if (value >= 1000) {
-        return `₹${(value / 1000).toFixed(2)}K`;
-    } else {
-        return `₹${value.toFixed(2)}`;
-    }
-}
 
 module.exports = investorMeetingController;
