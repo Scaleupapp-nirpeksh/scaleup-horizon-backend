@@ -337,19 +337,29 @@ exports.deleteRevenueEntry = async (req, res) => {
 // @access  Private
 exports.getFinancialOverview = async (req, res) => {
     try {
+        // Get bank account balances
         const bankAccounts = await BankAccount.find();
         const totalBankBalance = bankAccounts.reduce((sum, acc) => sum + acc.currentBalance, 0);
 
-        const rounds = await Round.find(); // Assuming you want total from all rounds
+        // Get total funds received from rounds
+        const rounds = await Round.find();
         const totalFundsReceivedFromRounds = rounds.reduce((sum, r) => sum + r.totalFundsReceived, 0);
         
-        // Calculate Monthly Burn Rate (average of last 3 months of expenses)
+        // Define time periods for calculations
         const threeMonthsAgo = new Date();
         threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-        threeMonthsAgo.setDate(1); // Start of the month
+        threeMonthsAgo.setDate(1);
         threeMonthsAgo.setHours(0, 0, 0, 0);
 
-
+        // Current month date range
+        const currentMonthStart = new Date();
+        currentMonthStart.setDate(1);
+        currentMonthStart.setHours(0, 0, 0, 0);
+        
+        // Current year date range
+        const currentYearStart = new Date(new Date().getFullYear(), 0, 1);
+        
+        // Calculate Monthly Burn Rate (average of last 3 months of expenses)
         const recentExpenses = await Expense.aggregate([
             { $match: { date: { $gte: threeMonthsAgo } } },
             {
@@ -361,19 +371,114 @@ exports.getFinancialOverview = async (req, res) => {
             { $sort: { "_id.year": 1, "_id.month": 1 } }
         ]);
         
+        // Calculate recent revenue (last 3 months)
+        const recentRevenue = await Revenue.aggregate([
+            { $match: { date: { $gte: threeMonthsAgo } } },
+            {
+                $group: {
+                    _id: { year: { $year: "$date" }, month: { $month: "$date" } },
+                    totalMonthlyRevenue: { $sum: "$amount" }
+                }
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } }
+        ]);
+
+        // Get monthly and yearly totals
+        const currentMonthExpenses = await Expense.aggregate([
+            { $match: { date: { $gte: currentMonthStart } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        
+        const currentMonthRevenue = await Revenue.aggregate([
+            { $match: { date: { $gte: currentMonthStart } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        
+        const currentYearExpenses = await Expense.aggregate([
+            { $match: { date: { $gte: currentYearStart } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        
+        const currentYearRevenue = await Revenue.aggregate([
+            { $match: { date: { $gte: currentYearStart } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        
+        // Get the latest expenses and revenue (most recent 10 of each)
+        const latestExpenses = await Expense.find()
+            .sort({ date: -1 })
+            .limit(10)
+            .select('date amount category description');
+            
+        const latestRevenue = await Revenue.find()
+            .sort({ date: -1 })
+            .limit(10)
+            .select('date amount source description');
+
+        // Calculate totals and averages
         let averageMonthlyBurnRate = 0;
         if (recentExpenses.length > 0) {
             const totalBurnOverPeriod = recentExpenses.reduce((sum, month) => sum + month.totalMonthlyExpense, 0);
             averageMonthlyBurnRate = totalBurnOverPeriod / recentExpenses.length;
         }
+        
+        let averageMonthlyRevenue = 0;
+        if (recentRevenue.length > 0) {
+            const totalRevenueOverPeriod = recentRevenue.reduce((sum, month) => sum + month.totalMonthlyRevenue, 0);
+            averageMonthlyRevenue = totalRevenueOverPeriod / recentRevenue.length;
+        }
 
-        const estimatedRunwayMonths = averageMonthlyBurnRate > 0 ? (totalBankBalance / averageMonthlyBurnRate) : Infinity;
+        // Calculate net income, net burn, and runway
+        const netMonthlyIncome = averageMonthlyRevenue - averageMonthlyBurnRate;
+        const estimatedRunwayMonths = averageMonthlyBurnRate > 0 
+            ? (totalBankBalance / averageMonthlyBurnRate) 
+            : "Infinite";
 
+        // Prepare the response
         res.json({
+            // Original data
             totalFundsReceivedFromRounds,
             currentTotalBankBalance: totalBankBalance,
             averageMonthlyBurnRate: averageMonthlyBurnRate.toFixed(2),
             estimatedRunwayMonths: isFinite(estimatedRunwayMonths) ? estimatedRunwayMonths.toFixed(1) : "N/A (No Burn or No Funds)",
+            
+            // New data - monthly metrics
+            averageMonthlyRevenue: averageMonthlyRevenue.toFixed(2),
+            netMonthlyIncome: netMonthlyIncome.toFixed(2),
+            
+            // Current month data
+            currentMonth: {
+                expenses: currentMonthExpenses[0]?.total || 0,
+                revenue: currentMonthRevenue[0]?.total || 0,
+                netIncome: (currentMonthRevenue[0]?.total || 0) - (currentMonthExpenses[0]?.total || 0)
+            },
+            
+            // Current year data
+            currentYear: {
+                expenses: currentYearExpenses[0]?.total || 0,
+                revenue: currentYearRevenue[0]?.total || 0,
+                netIncome: (currentYearRevenue[0]?.total || 0) - (currentYearExpenses[0]?.total || 0)
+            },
+            
+            // Recent transactions
+            latestTransactions: {
+                expenses: latestExpenses,
+                revenue: latestRevenue
+            },
+            
+            // Historical data by month (for charts)
+            historicalData: {
+                expenses: recentExpenses.map(month => ({
+                    year: month._id.year,
+                    month: month._id.month,
+                    amount: month.totalMonthlyExpense
+                })),
+                revenue: recentRevenue.map(month => ({
+                    year: month._id.year,
+                    month: month._id.month, 
+                    amount: month.totalMonthlyRevenue
+                }))
+            }
         });
     } catch (err) {
         console.error('Error fetching financial overview:', err.message);
