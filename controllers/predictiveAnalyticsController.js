@@ -1313,6 +1313,77 @@ static async deleteRevenueCohort(req, res) {
         res.status(500).json({ msg: 'Server Error' });
     }
 }
+
+/**
+ * Update metrics for a revenue cohort
+ */
+static async updateCohortMetrics(req, res) {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ msg: 'Invalid cohort ID' });
+        }
+
+        const { metrics } = req.body;
+        
+        if (!metrics || !Array.isArray(metrics)) {
+            return res.status(400).json({ msg: 'Metrics array is required' });
+        }
+
+        // Find the cohort
+        const cohort = await RevenueCohort.findById(req.params.id);
+        
+        if (!cohort || cohort.createdBy.toString() !== req.horizonUser.id) {
+            return res.status(404).json({ msg: 'Cohort not found' });
+        }
+
+        // Validate the metrics array and ensure all required fields are present
+        for (const metric of metrics) {
+            if (typeof metric.periodNumber !== 'number' || !metric.periodLabel) {
+                return res.status(400).json({ 
+                    msg: 'Each metric must include periodNumber and periodLabel' 
+                });
+            }
+        }
+
+        // Update the metrics
+        cohort.metrics = metrics;
+        
+        // Sort metrics by period number
+        cohort.metrics.sort((a, b) => a.periodNumber - b.periodNumber);
+        
+        // Calculate and update LTV if we have non-projected metrics
+        const historicalMetrics = metrics.filter(m => !m.isProjected);
+        if (historicalMetrics.length > 0) {
+            try {
+                const ltvResults = PredictionAlgorithms.calculateCohortLTV(cohort, 0.1);
+                
+                // Update LTV fields
+                cohort.actualLTV = (!isNaN(ltvResults.ltv) && isFinite(ltvResults.ltv)) 
+                    ? ltvResults.ltv 
+                    : cohort.actualLTV || 0;
+                
+                // Calculate LTV:CAC ratio
+                if (cohort.averageCAC > 0 && ltvResults.ltvPerUser && !isNaN(ltvResults.ltvPerUser) && isFinite(ltvResults.ltvPerUser)) {
+                    cohort.ltcacRatio = ltvResults.ltvPerUser / cohort.averageCAC;
+                }
+                
+                // Generate insights
+                cohort.insights = PredictiveAnalyticsController.generateCohortInsights(cohort, ltvResults);
+            } catch (ltvError) {
+                console.error('Error calculating LTV:', ltvError);
+                // Keep existing values if calculation fails
+            }
+        }
+
+        // Save the updated cohort
+        await cohort.save();
+        res.json(cohort);
+    } catch (err) {
+        console.error('Error updating cohort metrics:', err);
+        res.status(500).json({ msg: 'Server Error: Could not update cohort metrics.' });
+    }
+}
+
 }
 
 

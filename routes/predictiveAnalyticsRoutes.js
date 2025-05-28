@@ -179,6 +179,9 @@ router.get('/revenue-cohorts/:id', PredictiveAnalyticsController.getRevenueCohor
 // @access  Private
 router.delete('/revenue-cohorts/:id', PredictiveAnalyticsController.deleteRevenueCohort);
 
-
+// @route   PATCH /api/horizon/analytics/revenue-cohorts/:id/metrics
+// @desc    Update metrics for a revenue cohort
+// @access  Private
+router.patch('/revenue-cohorts/:id/metrics', PredictiveAnalyticsController.updateCohortMetrics);
 
 module.exports = router;
