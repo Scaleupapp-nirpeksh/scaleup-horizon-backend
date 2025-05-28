@@ -130,4 +130,55 @@ router.post('/revenue-cohorts/:cohortId/projections', PredictiveAnalyticsControl
 // @access  Private
 router.get('/revenue-cohorts/compare', PredictiveAnalyticsController.getCohortsComparison);
 
+
+// --- Fundraising Predictions (Complete CRUD) ---
+// @route   GET /api/horizon/analytics/fundraising-predictions
+// @desc    Get all fundraising predictions
+// @access  Private
+router.get('/fundraising-predictions', PredictiveAnalyticsController.getFundraisingPredictions);
+
+// @route   GET /api/horizon/analytics/fundraising-predictions/:id
+// @desc    Get single fundraising prediction
+// @access  Private
+router.get('/fundraising-predictions/:id', PredictiveAnalyticsController.getFundraisingPredictionById);
+
+// @route   DELETE /api/horizon/analytics/fundraising-predictions/:id
+// @desc    Delete fundraising prediction
+// @access  Private
+router.delete('/fundraising-predictions/:id', PredictiveAnalyticsController.deleteFundraisingPrediction);
+
+// --- Cash Flow Forecasts (Complete CRUD) ---
+// @route   GET /api/horizon/analytics/cash-flow-forecasts
+// @desc    Get all cash flow forecasts
+// @access  Private
+router.get('/cash-flow-forecasts', PredictiveAnalyticsController.getCashFlowForecasts);
+
+// @route   GET /api/horizon/analytics/cash-flow-forecasts/:id
+// @desc    Get single cash flow forecast
+// @access  Private
+router.get('/cash-flow-forecasts/:id', PredictiveAnalyticsController.getCashFlowForecastById);
+
+// @route   DELETE /api/horizon/analytics/cash-flow-forecasts/:id
+// @desc    Delete cash flow forecast
+// @access  Private
+router.delete('/cash-flow-forecasts/:id', PredictiveAnalyticsController.deleteCashFlowForecast);
+
+// --- Revenue Cohorts (Complete CRUD) ---
+// @route   GET /api/horizon/analytics/revenue-cohorts
+// @desc    Get all revenue cohorts
+// @access  Private
+router.get('/revenue-cohorts', PredictiveAnalyticsController.getRevenueCohorts);
+
+// @route   GET /api/horizon/analytics/revenue-cohorts/:id
+// @desc    Get single revenue cohort
+// @access  Private
+router.get('/revenue-cohorts/:id', PredictiveAnalyticsController.getRevenueCohortById);
+
+// @route   DELETE /api/horizon/analytics/revenue-cohorts/:id
+// @desc    Delete revenue cohort
+// @access  Private
+router.delete('/revenue-cohorts/:id', PredictiveAnalyticsController.deleteRevenueCohort);
+
+
+
 module.exports = router;

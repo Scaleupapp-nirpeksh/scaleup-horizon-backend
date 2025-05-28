@@ -640,69 +640,85 @@ class PredictiveAnalyticsController {
         return forecasts;
     }
 
-    /**
-     * Generate weekly forecasts
-     */
-    static async generateWeeklyForecasts(currentPosition, categoryForecasts, startDate, endDate, granularity) {
-        const forecasts = [];
-        let currentDate = moment(startDate);
-        let weekNumber = 1;
-        let cumulativeCashFlow = 0;
-        let cashBalance = currentPosition.cash;
+   /**
+ * Generate weekly forecasts - FIXED VERSION
+ */
+static async generateWeeklyForecasts(currentPosition, categoryForecasts, startDate, endDate, granularity) {
+    const forecasts = [];
+    let currentDate = moment(startDate);
+    let weekNumber = 1;
+    let cumulativeCashFlow = 0;
+    let cashBalance = currentPosition.cash;
 
-        while (currentDate.isBefore(endDate)) {
-            const weekStart = currentDate.clone();
-            const weekEnd = currentDate.clone().add(6, 'days');
+    while (currentDate.isBefore(endDate)) {
+        const weekStart = currentDate.clone();
+        const weekEnd = currentDate.clone().add(6, 'days');
 
-            // Calculate inflows and outflows for this week
-            let revenueProjected = 0;
-            let operatingExpenses = 0;
-            let payroll = 0;
+        // Calculate inflows and outflows for this week
+        let revenueProjected = 0;
+        let operatingExpenses = 0;
+        let payroll = 0;
 
-            categoryForecasts.forEach(cf => {
-                const weeklyAmount = cf.baseAmount / 4; // Convert monthly to weekly
-                const growth = Math.pow(1 + cf.growthRate, (weekNumber - 1) / 4);
-                
-                if (cf.category === 'Revenue') {
-                    revenueProjected = weeklyAmount * growth;
-                } else if (cf.category === 'Salaries & Wages') {
-                    payroll = weeklyAmount * growth;
-                } else {
-                    operatingExpenses += weeklyAmount * growth;
-                }
-            });
+        categoryForecasts.forEach(cf => {
+            const weeklyAmount = cf.baseAmount / 4; // Convert monthly to weekly
+            const growth = Math.pow(1 + cf.growthRate, (weekNumber - 1) / 4);
+            
+            if (cf.category === 'Revenue') {
+                revenueProjected = weeklyAmount * growth;
+            } else if (cf.category === 'Salaries & Wages') {
+                payroll = weeklyAmount * growth;
+            } else {
+                operatingExpenses += weeklyAmount * growth;
+            }
+        });
 
-            const totalInflows = revenueProjected;
-            const totalOutflows = operatingExpenses + payroll;
-            const netCashFlow = totalInflows - totalOutflows;
-            cumulativeCashFlow += netCashFlow;
-            cashBalance += netCashFlow;
+        const totalInflows = revenueProjected;
+        const totalOutflows = operatingExpenses + payroll;
+        const netCashFlow = totalInflows - totalOutflows;
+        cumulativeCashFlow += netCashFlow;
+        cashBalance += netCashFlow;
 
-            forecasts.push({
-                weekNumber,
-                startDate: weekStart.toDate(),
-                endDate: weekEnd.toDate(),
-                revenueProjected,
-                investmentInflows: 0,
-                otherInflows: 0,
-                totalInflows,
-                operatingExpenses,
-                payroll,
-                otherOutflows: 0,
-                totalOutflows,
-                netCashFlow,
-                cumulativeCashFlow,
-                cashBalance,
-                confidenceLevel: 0.9 - (weekNumber * 0.02), // Decreases over time
-                variance: weekNumber * 2 // Increases over time
-            });
-
-            currentDate.add(7, 'days');
-            weekNumber++;
+        // Calculate confidence level based on forecast type
+        let confidenceLevel;
+        if (weekNumber <= 4) {
+            // First month: high confidence (90-85%)
+            confidenceLevel = 0.9 - (weekNumber * 0.0125);
+        } else if (weekNumber <= 12) {
+            // Months 2-3: moderate confidence (85-70%)
+            confidenceLevel = 0.85 - ((weekNumber - 4) * 0.01875);
+        } else if (weekNumber <= 26) {
+            // Months 4-6: lower confidence (70-50%)
+            confidenceLevel = 0.7 - ((weekNumber - 12) * 0.0143);
+        } else {
+            // Beyond 6 months: maintain minimum confidence
+            confidenceLevel = Math.max(0.3, 0.5 - ((weekNumber - 26) * 0.005));
         }
 
-        return forecasts;
+        forecasts.push({
+            weekNumber,
+            startDate: weekStart.toDate(),
+            endDate: weekEnd.toDate(),
+            revenueProjected,
+            investmentInflows: 0,
+            otherInflows: 0,
+            totalInflows,
+            operatingExpenses,
+            payroll,
+            otherOutflows: 0,
+            totalOutflows,
+            netCashFlow,
+            cumulativeCashFlow,
+            cashBalance,
+            confidenceLevel: Math.max(0.1, confidenceLevel), // Ensure minimum 10%
+            variance: Math.min(50, weekNumber * 1.5) // Cap variance at 50%
+        });
+
+        currentDate.add(7, 'days');
+        weekNumber++;
     }
+
+    return forecasts;
+}
 
     /**
      * Perform scenario analysis
@@ -1100,6 +1116,206 @@ class PredictiveAnalyticsController {
             res.status(500).json({ msg: 'Server Error' });
         }
     }
+
+
+
+    /**
+ * Get all fundraising predictions
+ */
+static async getFundraisingPredictions(req, res) {
+    try {
+        const predictions = await FundraisingPrediction.find({
+            createdBy: req.horizonUser.id
+        })
+        .populate('linkedRoundId', 'name')
+        .sort({ createdAt: -1 })
+        .limit(50);
+
+        res.json(predictions);
+    } catch (err) {
+        console.error('Error fetching fundraising predictions:', err);
+        res.status(500).json({ msg: 'Server Error: Could not fetch fundraising predictions.' });
+    }
 }
+
+/**
+ * Get all cash flow forecasts
+ */
+static async getCashFlowForecasts(req, res) {
+    try {
+        const forecasts = await CashFlowForecast.find({
+            createdBy: req.horizonUser.id,
+            isActive: true
+        })
+        .sort({ createdAt: -1 })
+        .limit(50);
+
+        res.json(forecasts);
+    } catch (err) {
+        console.error('Error fetching cash flow forecasts:', err);
+        res.status(500).json({ msg: 'Server Error: Could not fetch cash flow forecasts.' });
+    }
+}
+
+/**
+ * Get all revenue cohorts
+ */
+static async getRevenueCohorts(req, res) {
+    try {
+        const cohorts = await RevenueCohort.find({
+            createdBy: req.horizonUser.id
+        })
+        .sort({ cohortStartDate: -1 })
+        .limit(100);
+
+        res.json(cohorts);
+    } catch (err) {
+        console.error('Error fetching revenue cohorts:', err);
+        res.status(500).json({ msg: 'Server Error: Could not fetch revenue cohorts.' });
+    }
+}
+
+/**
+ * Get fundraising prediction by ID
+ */
+static async getFundraisingPredictionById(req, res) {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ msg: 'Invalid prediction ID' });
+        }
+
+        const prediction = await FundraisingPrediction.findById(req.params.id)
+            .populate('linkedRoundId', 'name');
+        
+        if (!prediction || prediction.createdBy.toString() !== req.horizonUser.id) {
+            return res.status(404).json({ msg: 'Prediction not found' });
+        }
+
+        res.json(prediction);
+    } catch (err) {
+        console.error('Error fetching fundraising prediction:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+}
+
+/**
+ * Delete fundraising prediction
+ */
+static async deleteFundraisingPrediction(req, res) {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ msg: 'Invalid prediction ID' });
+        }
+
+        const prediction = await FundraisingPrediction.findById(req.params.id);
+        
+        if (!prediction || prediction.createdBy.toString() !== req.horizonUser.id) {
+            return res.status(404).json({ msg: 'Prediction not found' });
+        }
+
+        await FundraisingPrediction.findByIdAndDelete(req.params.id);
+        res.json({ msg: 'Fundraising prediction deleted' });
+    } catch (err) {
+        console.error('Error deleting fundraising prediction:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+}
+
+/**
+ * Get cash flow forecast by ID
+ */
+static async getCashFlowForecastById(req, res) {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ msg: 'Invalid forecast ID' });
+        }
+
+        const forecast = await CashFlowForecast.findById(req.params.id);
+        
+        if (!forecast || forecast.createdBy.toString() !== req.horizonUser.id) {
+            return res.status(404).json({ msg: 'Forecast not found' });
+        }
+
+        res.json(forecast);
+    } catch (err) {
+        console.error('Error fetching cash flow forecast:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+}
+
+/**
+ * Delete cash flow forecast
+ */
+static async deleteCashFlowForecast(req, res) {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ msg: 'Invalid forecast ID' });
+        }
+
+        const forecast = await CashFlowForecast.findById(req.params.id);
+        
+        if (!forecast || forecast.createdBy.toString() !== req.horizonUser.id) {
+            return res.status(404).json({ msg: 'Forecast not found' });
+        }
+
+        // Soft delete
+        forecast.isActive = false;
+        await forecast.save();
+        
+        res.json({ msg: 'Cash flow forecast deleted' });
+    } catch (err) {
+        console.error('Error deleting cash flow forecast:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+}
+
+/**
+ * Get revenue cohort by ID
+ */
+static async getRevenueCohortById(req, res) {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ msg: 'Invalid cohort ID' });
+        }
+
+        const cohort = await RevenueCohort.findById(req.params.id);
+        
+        if (!cohort || cohort.createdBy.toString() !== req.horizonUser.id) {
+            return res.status(404).json({ msg: 'Cohort not found' });
+        }
+
+        res.json(cohort);
+    } catch (err) {
+        console.error('Error fetching revenue cohort:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+}
+
+/**
+ * Delete revenue cohort
+ */
+static async deleteRevenueCohort(req, res) {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ msg: 'Invalid cohort ID' });
+        }
+
+        const cohort = await RevenueCohort.findById(req.params.id);
+        
+        if (!cohort || cohort.createdBy.toString() !== req.horizonUser.id) {
+            return res.status(404).json({ msg: 'Cohort not found' });
+        }
+
+        await RevenueCohort.findByIdAndDelete(req.params.id);
+        res.json({ msg: 'Revenue cohort deleted' });
+    } catch (err) {
+        console.error('Error deleting revenue cohort:', err);
+        res.status(500).json({ msg: 'Server Error' });
+    }
+}
+}
+
+
+
 
 module.exports = PredictiveAnalyticsController;
