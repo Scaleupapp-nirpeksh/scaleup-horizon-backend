@@ -8,6 +8,8 @@ const connectDB = require('./config/db');
 
 // Import existing routes
 const authRoutes = require('./routes/authRoutes');
+const organizationRoutes = require('./routes/organizationRoutes'); // Add this line
+
 const fundraisingRoutes = require('./routes/fundraisingRoutes');
 const financialRoutes = require('./routes/financialRoutes');
 const kpiRoutes = require('./routes/kpiRoutes'); 
@@ -55,6 +57,7 @@ app.use('/api/horizon/investor-reports', investorReportRoutes);
 app.use('/api/horizon/headcount', headcountRoutes);
 app.use('/api/horizon/product-milestones', productMilestoneRoutes);
 app.use('/api/horizon/investor-meetings', investorMeetingRoutes);
+app.use('/api/horizon/organizations', organizationRoutes);
 
 // New enhanced features routes
 app.use('/api/horizon/enhanced', enhancedRoutes);
@@ -67,7 +70,7 @@ app.get('/api/horizon/health', (req, res) => {
         version: '2.0.0',
         features: {
             mlCategorization: true,
-            bankSync: true,
+            bankaSync: true,
             customKPIs: true,
             recurringTransactions: true,
             autoReports: true,

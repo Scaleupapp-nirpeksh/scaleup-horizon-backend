@@ -6,14 +6,20 @@ const mongoose = require('mongoose');
 /**
  * Product Milestone Controller
  * Handles all operations related to product milestones, roadmap, and feature tracking
+ * Implements organization-level multi-tenancy for team collaboration
  */
 const productMilestoneController = {
     /**
      * Create a new product milestone
-     * @route POST /api/horizon/product-milestones
-     * @access Private
+     * @desc    Create a product milestone for the active organization
+     * @route   POST /api/horizon/product-milestones
+     * @access  Private (Requires authenticated user with organization context)
      */
     createMilestone: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             const {
                 name, description, milestoneType, status, completionPercentage,
@@ -32,6 +38,8 @@ const productMilestoneController = {
 
             // Create new milestone
             const newMilestone = new ProductMilestone({
+                organization: organizationId,  // Scope to organization
+                user: userId,                  // Track creator
                 name,
                 description,
                 milestoneType: milestoneType || 'Feature',
@@ -49,7 +57,7 @@ const productMilestoneController = {
                 priority: priority || 'Medium',
                 visibleToInvestors: visibleToInvestors !== undefined ? visibleToInvestors : true,
                 investorSummary,
-                createdBy: req.horizonUser.id
+                createdBy: userId              // Maintain for backward compatibility
             });
 
             // Save to database
@@ -79,10 +87,14 @@ const productMilestoneController = {
 
     /**
      * Get all product milestones with optional filtering
-     * @route GET /api/horizon/product-milestones
-     * @access Private
+     * @desc    Get product milestones for the active organization
+     * @route   GET /api/horizon/product-milestones
+     * @access  Private
      */
     getMilestones: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization from request ---
+        const organizationId = req.organization._id;
+
         try {
             const {
                 status, milestoneType, quarter, search,
@@ -90,8 +102,9 @@ const productMilestoneController = {
                 page = 1, limit = 50, showInvestorOnly = false
             } = req.query;
 
-            // Build filter object
-            const filter = {};
+            // --- MULTI-TENANCY: Base filter includes organizationId ---
+            const filter = { organization: organizationId };
+            
             if (status) {
                 if (status.includes(',')) {
                     filter.status = { $in: status.split(',') };
@@ -126,7 +139,8 @@ const productMilestoneController = {
                 .limit(parseInt(limit))
                 .populate('productOwner', 'name')
                 .populate('teamMembers', 'name title')
-                .populate('tasks.assignee', 'name');
+                .populate('tasks.assignee', 'name')
+                .populate('user', 'name email');  // Show who created it
 
             // Get total count for pagination
             const total = await ProductMilestone.countDocuments(filter);
@@ -150,13 +164,19 @@ const productMilestoneController = {
 
     /**
      * Get product roadmap summary for investor view
-     * @route GET /api/horizon/product-milestones/investor-roadmap
-     * @access Private
+     * @desc    Get investor-visible roadmap for the active organization
+     * @route   GET /api/horizon/product-milestones/investor-roadmap
+     * @access  Private
      */
     getInvestorRoadmap: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization from request ---
+        const organizationId = req.organization._id;
+
         try {
+            // --- MULTI-TENANCY: Filter all queries by organizationId ---
             // Get upcoming milestones (only those visible to investors)
             const upcomingMilestones = await ProductMilestone.find({
+                organization: organizationId,
                 visibleToInvestors: true,
                 status: { $nin: ['Completed', 'Cancelled'] }
             })
@@ -166,6 +186,7 @@ const productMilestoneController = {
 
             // Get recently completed milestones
             const completedMilestones = await ProductMilestone.find({
+                organization: organizationId,
                 visibleToInvestors: true,
                 status: 'Completed'
             })
@@ -173,11 +194,11 @@ const productMilestoneController = {
             .select('name description actualEndDate businessImpact investorSummary')
             .limit(5);
 
-            // Get milestones by quarter
-            const quarterlyMilestones = await ProductMilestone.getMilestonesByQuarter();
+            // Get milestones by quarter for the organization
+            const quarterlyMilestones = await ProductMilestone.getMilestonesByQuarter(organizationId);
 
-            // Get status summary
-            const statusSummary = await ProductMilestone.getStatusSummary();
+            // Get status summary for the organization
+            const statusSummary = await ProductMilestone.getStatusSummary(organizationId);
 
             res.json({
                 success: true,
@@ -199,10 +220,14 @@ const productMilestoneController = {
 
     /**
      * Get a single product milestone by ID
-     * @route GET /api/horizon/product-milestones/:id
-     * @access Private
+     * @desc    Get specific product milestone for the active organization
+     * @route   GET /api/horizon/product-milestones/:id
+     * @access  Private
      */
     getMilestoneById: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization from request ---
+        const organizationId = req.organization._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({
@@ -211,17 +236,22 @@ const productMilestoneController = {
                 });
             }
 
-            const milestone = await ProductMilestone.findById(req.params.id)
-                .populate('productOwner', 'name title department')
-                .populate('teamMembers', 'name title')
-                .populate('tasks.assignee', 'name title')
-                .populate('relatedDocuments')
-                .populate('dependencies.milestoneId', 'name status completionPercentage');
+            // --- MULTI-TENANCY: Filter by _id AND organizationId ---
+            const milestone = await ProductMilestone.findOne({ 
+                _id: req.params.id,
+                organization: organizationId 
+            })
+            .populate('productOwner', 'name title department')
+            .populate('teamMembers', 'name title')
+            .populate('tasks.assignee', 'name title')
+            .populate('relatedDocuments')
+            .populate('dependencies.milestoneId', 'name status completionPercentage')
+            .populate('user', 'name email');  // Show who created it
 
             if (!milestone) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Product milestone not found'
+                    msg: 'Product milestone not found within your organization'
                 });
             }
 
@@ -240,10 +270,15 @@ const productMilestoneController = {
 
     /**
      * Update a product milestone
-     * @route PUT /api/horizon/product-milestones/:id
-     * @access Private
+     * @desc    Update product milestone for the active organization
+     * @route   PUT /api/horizon/product-milestones/:id
+     * @access  Private
      */
     updateMilestone: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({
@@ -252,12 +287,16 @@ const productMilestoneController = {
                 });
             }
 
-            const milestone = await ProductMilestone.findById(req.params.id);
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const milestone = await ProductMilestone.findOne({ 
+                _id: req.params.id,
+                organization: organizationId 
+            });
 
             if (!milestone) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Product milestone not found'
+                    msg: 'Product milestone not found within your organization'
                 });
             }
 
@@ -280,10 +319,11 @@ const productMilestoneController = {
             }
 
             // Add updatedBy field
-            req.body.updatedBy = req.horizonUser.id;
+            req.body.updatedBy = userId;
 
-            const updatedMilestone = await ProductMilestone.findByIdAndUpdate(
-                req.params.id,
+            // --- MULTI-TENANCY: Ensure organization match in update ---
+            const updatedMilestone = await ProductMilestone.findOneAndUpdate(
+                { _id: req.params.id, organization: organizationId },
                 { $set: req.body },
                 { new: true, runValidators: true }
             );
@@ -312,10 +352,14 @@ const productMilestoneController = {
 
     /**
      * Delete a product milestone
-     * @route DELETE /api/horizon/product-milestones/:id
-     * @access Private
+     * @desc    Delete product milestone for the active organization
+     * @route   DELETE /api/horizon/product-milestones/:id
+     * @access  Private
      */
     deleteMilestone: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization from request ---
+        const organizationId = req.organization._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({
@@ -324,18 +368,25 @@ const productMilestoneController = {
                 });
             }
 
-            const milestone = await ProductMilestone.findById(req.params.id);
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const milestone = await ProductMilestone.findOne({ 
+                _id: req.params.id,
+                organization: organizationId 
+            });
 
             if (!milestone) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Product milestone not found'
+                    msg: 'Product milestone not found within your organization'
                 });
             }
 
             // Instead of hard delete, consider soft delete for important data
             // For now, we'll do a hard delete
-            await ProductMilestone.findByIdAndDelete(req.params.id);
+            await ProductMilestone.findOneAndDelete({ 
+                _id: req.params.id,
+                organization: organizationId 
+            });
 
             res.json({
                 success: true,
@@ -353,10 +404,15 @@ const productMilestoneController = {
 
     /**
      * Add a task to a milestone
-     * @route POST /api/horizon/product-milestones/:id/tasks
-     * @access Private
+     * @desc    Add task to milestone for the active organization
+     * @route   POST /api/horizon/product-milestones/:id/tasks
+     * @access  Private
      */
     addTask: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({
@@ -377,12 +433,16 @@ const productMilestoneController = {
                 });
             }
 
-            const milestone = await ProductMilestone.findById(req.params.id);
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const milestone = await ProductMilestone.findOne({ 
+                _id: req.params.id,
+                organization: organizationId 
+            });
 
             if (!milestone) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Product milestone not found'
+                    msg: 'Product milestone not found within your organization'
                 });
             }
 
@@ -396,12 +456,13 @@ const productMilestoneController = {
                 startDate: new Date(),
                 dueDate,
                 dependencies: dependencies || [],
-                completionPercentage: 0
+                completionPercentage: 0,
+                createdBy: userId  // Track who created the task
             };
 
             // Add task to milestone
             milestone.tasks.push(newTask);
-            milestone.updatedBy = req.horizonUser.id;
+            milestone.updatedBy = userId;
 
             await milestone.save();
 
@@ -421,10 +482,15 @@ const productMilestoneController = {
 
     /**
      * Update a task within a milestone
-     * @route PUT /api/horizon/product-milestones/:id/tasks/:taskId
-     * @access Private
+     * @desc    Update task in milestone for the active organization
+     * @route   PUT /api/horizon/product-milestones/:id/tasks/:taskId
+     * @access  Private
      */
     updateTask: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id) || 
                 !mongoose.Types.ObjectId.isValid(req.params.taskId)) {
@@ -434,12 +500,16 @@ const productMilestoneController = {
                 });
             }
 
-            const milestone = await ProductMilestone.findById(req.params.id);
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const milestone = await ProductMilestone.findOne({ 
+                _id: req.params.id,
+                organization: organizationId 
+            });
 
             if (!milestone) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Product milestone not found'
+                    msg: 'Product milestone not found within your organization'
                 });
             }
 
@@ -465,8 +535,10 @@ const productMilestoneController = {
                 updatedTask.completedDate = new Date();
             }
 
+            updatedTask.updatedBy = userId;  // Track who updated the task
+
             milestone.tasks[taskIndex] = updatedTask;
-            milestone.updatedBy = req.horizonUser.id;
+            milestone.updatedBy = userId;
 
             await milestone.save();
 
@@ -486,10 +558,15 @@ const productMilestoneController = {
 
     /**
      * Delete a task from a milestone
-     * @route DELETE /api/horizon/product-milestones/:id/tasks/:taskId
-     * @access Private
+     * @desc    Delete task from milestone for the active organization
+     * @route   DELETE /api/horizon/product-milestones/:id/tasks/:taskId
+     * @access  Private
      */
     deleteTask: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id) || 
                 !mongoose.Types.ObjectId.isValid(req.params.taskId)) {
@@ -499,12 +576,16 @@ const productMilestoneController = {
                 });
             }
 
-            const milestone = await ProductMilestone.findById(req.params.id);
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const milestone = await ProductMilestone.findOne({ 
+                _id: req.params.id,
+                organization: organizationId 
+            });
 
             if (!milestone) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Product milestone not found'
+                    msg: 'Product milestone not found within your organization'
                 });
             }
 
@@ -522,7 +603,7 @@ const productMilestoneController = {
 
             // Remove task
             milestone.tasks.splice(taskIndex, 1);
-            milestone.updatedBy = req.horizonUser.id;
+            milestone.updatedBy = userId;
 
             await milestone.save();
 
@@ -541,13 +622,19 @@ const productMilestoneController = {
 
     /**
      * Get product milestone statistics
-     * @route GET /api/horizon/product-milestones/statistics
-     * @access Private
+     * @desc    Get milestone statistics for the active organization
+     * @route   GET /api/horizon/product-milestones/statistics
+     * @access  Private
      */
     getMilestoneStatistics: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization from request ---
+        const organizationId = req.organization._id;
+
         try {
+            // --- MULTI-TENANCY: Filter all aggregations by organizationId ---
             // Get status counts
             const statusCounts = await ProductMilestone.aggregate([
+                { $match: { organization: organizationId } },
                 { $group: { 
                     _id: '$status', 
                     count: { $sum: 1 } 
@@ -557,6 +644,7 @@ const productMilestoneController = {
 
             // Get type counts
             const typeCounts = await ProductMilestone.aggregate([
+                { $match: { organization: organizationId } },
                 { $group: { 
                     _id: '$milestoneType', 
                     count: { $sum: 1 } 
@@ -567,6 +655,7 @@ const productMilestoneController = {
             // Get completion percentage average
             const completionStats = await ProductMilestone.aggregate([
                 { $match: { 
+                    organization: organizationId,
                     status: { $nin: ['Completed', 'Cancelled'] } 
                 }},
                 { $group: { 
@@ -579,18 +668,23 @@ const productMilestoneController = {
             // Get on-time vs delayed stats
             const today = new Date();
             const delayedCount = await ProductMilestone.countDocuments({
+                organization: organizationId,
                 status: { $nin: ['Completed', 'Cancelled'] },
                 plannedEndDate: { $lt: today }
             });
 
             const onTimeCount = await ProductMilestone.countDocuments({
+                organization: organizationId,
                 status: { $nin: ['Completed', 'Cancelled'] },
                 plannedEndDate: { $gte: today }
             });
 
             // Get quarterly breakdown
             const quarterlyBreakdown = await ProductMilestone.aggregate([
-                { $match: { quarter: { $exists: true, $ne: null } } },
+                { $match: { 
+                    organization: organizationId,
+                    quarter: { $exists: true, $ne: null } 
+                }},
                 { $group: { 
                     _id: '$quarter', 
                     count: { $sum: 1 },

@@ -3,26 +3,26 @@ const math = require('mathjs');
 const moment = require('moment');
 const mongoose = require('mongoose');
 
-// Assume CustomKPI is your Mongoose model. If it's defined elsewhere, ensure it's correctly required.
-// For this example, let's assume it might be defined and used like this:
-// const CustomKPI = mongoose.model('CustomKPI', new mongoose.Schema({ /* ... schema ... */ }));
-// If CustomKPI is not a model but something else, the logic using it (new CustomKPI, CustomKPI.findById) needs to align.
-// The error is not directly related to CustomKPI model, but it's used throughout the service.
+// Updated CustomKPI model definition with multi-tenancy
 let CustomKPI;
 try {
     CustomKPI = mongoose.model('CustomKPI');
 } catch (error) {
-    // Define a dummy model if not already defined, to prevent further errors in this snippet
-    // In a real scenario, ensure your CustomKPI model is properly defined and registered.
     const kpiSchema = new mongoose.Schema({
+        // Multi-tenancy field
+        organization: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true },
+        
         name: String,
         displayName: String,
         category: String,
         formula: String,
         formulaVariables: Array,
         displayFormat: Object,
+        
+        // Track who created/modified within the organization
         createdBy: mongoose.Schema.Types.ObjectId,
         lastModifiedBy: mongoose.Schema.Types.ObjectId,
+        
         cache: {
             currentValue: Number,
             previousValue: Number,
@@ -35,7 +35,21 @@ try {
         isActive: { type: Boolean, default: true },
         isPinned: { type: Boolean, default: false },
         visualization: Object,
+        
+        // Organization-level settings
+        visibility: {
+            type: String,
+            enum: ['all', 'admins', 'custom'],
+            default: 'all'
+        },
+        allowedRoles: [{ type: String }], // If visibility is 'custom'
     }, { timestamps: true });
+    
+    // Indexes for performance
+    kpiSchema.index({ organization: 1, name: 1 }, { unique: true });
+    kpiSchema.index({ organization: 1, isActive: 1, isPinned: 1 });
+    kpiSchema.index({ organization: 1, category: 1 });
+    
     CustomKPI = mongoose.model('CustomKPI', kpiSchema);
 }
 
@@ -43,11 +57,9 @@ try {
 class CustomKPIService {
     constructor() {
         this.mathParser = math.parser();
-        // Changed: Call the renamed method to get static KPI definitions
         this.builtInKPIs = this.getBuiltInKPIDefinitions();
     }
 
-    // Renamed: This method now solely returns the static definitions
     getBuiltInKPIDefinitions() {
         return [
             {
@@ -111,7 +123,7 @@ class CustomKPIService {
                     {
                         variable: 'monthly_burn',
                         source: 'custom_metric',
-                        value: 'burn_rate' // Reference to another KPI
+                        value: 'burn_rate'
                     }
                 ],
                 displayFormat: { type: 'number', decimals: 1, suffix: ' months' }
@@ -146,7 +158,7 @@ class CustomKPIService {
                     {
                         variable: 'ltv',
                         source: 'custom_metric',
-                        value: 'average_ltv' // From cohort analysis
+                        value: 'average_ltv'
                     },
                     {
                         variable: 'cac',
@@ -165,9 +177,19 @@ class CustomKPIService {
         ];
     }
 
-    // Create a new custom KPI
-    async createKPI(kpiData, userId) {
+    // Create a new custom KPI - NOW ORGANIZATION-BASED
+    async createKPI(kpiData, userId, organizationId) {
         try {
+            // Check if KPI with same name already exists in organization
+            const existingKPI = await CustomKPI.findOne({
+                organization: organizationId,
+                name: kpiData.name
+            });
+            
+            if (existingKPI) {
+                throw new Error(`KPI with name "${kpiData.name}" already exists in this organization`);
+            }
+            
             // Validate formula
             const validation = await this.validateFormula(kpiData.formula, kpiData.formulaVariables);
             if (!validation.isValid) {
@@ -177,6 +199,7 @@ class CustomKPIService {
             // Create KPI
             const kpi = new CustomKPI({
                 ...kpiData,
+                organization: organizationId,
                 createdBy: userId,
                 lastModifiedBy: userId
             });
@@ -184,7 +207,7 @@ class CustomKPIService {
             await kpi.save();
 
             // Calculate initial value
-            await this.calculateKPIValue(kpi._id);
+            await this.calculateKPIValue(kpi._id, organizationId);
 
             return kpi;
         } catch (error) {
@@ -210,14 +233,12 @@ class CustomKPIService {
 
             // Test formula with dummy values
             const scope = {};
-            formulaVars.forEach(v => scope[v] = 1); // Assign a default non-zero value
+            formulaVars.forEach(v => scope[v] = 1);
             
             try {
                 const evaluationResult = math.evaluate(formula, scope);
                 if (typeof evaluationResult !== 'number' || isNaN(evaluationResult) || !isFinite(evaluationResult)) {
-                     // console.warn(`Formula evaluation with dummy values resulted in: ${evaluationResult}`);
-                     // Depending on strictness, this could be an error or a warning.
-                     // For now, let's assume it's acceptable if math.evaluate doesn't throw.
+                     // Acceptable if math.evaluate doesn't throw
                 }
             } catch (mathError) {
                 return {
@@ -237,42 +258,42 @@ class CustomKPIService {
 
     // Extract variables from formula
     extractVariablesFromFormula(formula) {
-        // Improved regex to handle multi-character variable names and avoid splitting them
-        // Remove numbers, operators, parentheses, commas, and known math functions
         let cleaned = formula;
-        // Remove math functions like sin(x), log(y, base)
+        // Remove math functions
         cleaned = cleaned.replace(/\b(sin|cos|tan|log|sqrt|abs|min|max|round|floor|ceil)\b\s*\([^)]*\)/g, ' ');
-        // Remove numbers (integers and decimals)
+        // Remove numbers
         cleaned = cleaned.replace(/\b\d+(\.\d+)?\b/g, ' ');
         // Remove operators and parentheses
         cleaned = cleaned.replace(/[\s+\-*/().,]/g, ' ');
         
-        // Extract unique variable names (words)
+        // Extract unique variable names
         const variables = cleaned.split(/\s+/)
-            .filter(v => v.length > 0 && isNaN(v)) // Ensure it's not a number remnant
-            .filter((v, i, arr) => arr.indexOf(v) === i); // Unique
+            .filter(v => v.length > 0 && isNaN(v))
+            .filter((v, i, arr) => arr.indexOf(v) === i);
         
         return variables;
     }
 
-    // Calculate KPI value
-    async calculateKPIValue(kpiId, targetDate = new Date()) {
+    // Calculate KPI value - NOW WITH ORGANIZATION CONTEXT
+    async calculateKPIValue(kpiId, organizationId, targetDate = new Date()) {
         try {
-            const kpi = await CustomKPI.findById(kpiId);
-            if (!kpi) throw new Error('KPI not found');
+            const kpi = await CustomKPI.findOne({
+                _id: kpiId,
+                organization: organizationId
+            });
+            
+            if (!kpi) throw new Error('KPI not found or unauthorized');
 
-            // Get values for all variables
+            // Get values for all variables with organization context
             const scope = {};
             
             for (const variable of kpi.formulaVariables) {
                 try {
-                    const value = await this.getVariableValue(variable, targetDate);
+                    const value = await this.getVariableValue(variable, organizationId, targetDate);
                     scope[variable.variable] = value;
                 } catch (varError) {
                     console.error(`Error getting value for variable ${variable.variable} in KPI ${kpi.name}:`, varError.message);
-                    // Decide handling: throw error, or use a default (e.g., 0 or null), or mark KPI as uncalculable
-                    scope[variable.variable] = 0; // Default to 0 if a variable fetch fails
-                    // Or: throw new Error(`Failed to get value for variable ${variable.variable}: ${varError.message}`);
+                    scope[variable.variable] = 0;
                 }
             }
 
@@ -282,7 +303,7 @@ class CustomKPIService {
                 result = math.evaluate(kpi.formula, scope);
                 if (typeof result !== 'number' || isNaN(result) || !isFinite(result)) {
                     console.warn(`Formula evaluation for KPI ${kpi.name} resulted in non-numeric value: ${result}. Scope:`, scope);
-                    result = 0; // Default to 0 for non-numeric results (e.g. division by zero -> Infinity)
+                    result = 0;
                 }
             } catch (error) {
                 console.error(`Formula evaluation error for KPI ${kpi.name}: ${error.message}. Scope:`, scope);
@@ -290,7 +311,7 @@ class CustomKPIService {
             }
 
             // Update cache
-            const previousValue = kpi.cache.currentValue; // Can be null or undefined initially
+            const previousValue = kpi.cache.currentValue;
             kpi.cache.previousValue = (previousValue !== null && previousValue !== undefined) ? previousValue : null;
             kpi.cache.currentValue = result;
             kpi.cache.lastCalculated = new Date();
@@ -299,11 +320,10 @@ class CustomKPIService {
             if (kpi.cache.previousValue !== null && kpi.cache.previousValue !== 0) {
                 kpi.cache.trend = ((result - kpi.cache.previousValue) / Math.abs(kpi.cache.previousValue)) * 100;
             } else if (kpi.cache.previousValue === 0 && result !== 0) {
-                kpi.cache.trend = Infinity; // Or some other indicator of change from zero
+                kpi.cache.trend = Infinity;
             } else {
-                kpi.cache.trend = 0; // No change or previous value was null/zero
+                kpi.cache.trend = 0;
             }
-
 
             // Add to historical values
             kpi.cache.historicalValues = kpi.cache.historicalValues || [];
@@ -317,7 +337,7 @@ class CustomKPIService {
             const cutoffDate = moment().subtract(365, 'days').toDate();
             kpi.cache.historicalValues = kpi.cache.historicalValues
                 .filter(h => h.date > cutoffDate)
-                .sort((a, b) => new Date(a.date) - new Date(b.date)); // Ensure date comparison is correct
+                .sort((a, b) => new Date(a.date) - new Date(b.date));
 
             await kpi.save();
 
@@ -338,33 +358,32 @@ class CustomKPIService {
         }
     }
 
-    // Get variable value from data source
-    async getVariableValue(variable, targetDate) {
+    // Get variable value from data source - NOW WITH ORGANIZATION CONTEXT
+    async getVariableValue(variable, organizationId, targetDate) {
         const timeRange = this.getTimeRange(variable.timeframe, variable.customTimeframe, targetDate);
         
-        // Ensure Mongoose models are available. This is a common pattern if models are not globally registered or passed.
-        const Revenue = mongoose.models.Revenue || mongoose.model('Revenue', new mongoose.Schema({ amount: Number, date: Date, category: String }));
-        const Expense = mongoose.models.Expense || mongoose.model('Expense', new mongoose.Schema({ amount: Number, date: Date, category: String, vendor: String }));
-        const BankAccount = mongoose.models.BankAccount || mongoose.model('BankAccount', new mongoose.Schema({ currentBalance: Number }));
-        const ManualKpiSnapshot = mongoose.models.ManualKpiSnapshot || mongoose.model('ManualKpiSnapshot', new mongoose.Schema({ snapshotDate: Date, totalRegisteredUsers: Number }));
-        const RevenueCohort = mongoose.models.RevenueCohort || mongoose.model('RevenueCohort', new mongoose.Schema({ projectedLTV: Number }));
-
+        // Ensure models are available
+        const Revenue = mongoose.models.Revenue || mongoose.model('Revenue');
+        const Expense = mongoose.models.Expense || mongoose.model('Expense');
+        const BankAccount = mongoose.models.BankAccount || mongoose.model('BankAccount');
+        const ManualKpiSnapshot = mongoose.models.ManualKpiSnapshot || mongoose.model('ManualKpiSnapshot');
+        const RevenueCohort = mongoose.models.RevenueCohort || mongoose.model('RevenueCohort');
 
         switch (variable.source) {
             case 'revenue':
-                return await this.getRevenueValue(variable, timeRange, Revenue);
+                return await this.getRevenueValue(variable, timeRange, organizationId, Revenue);
             
             case 'expense':
-                return await this.getExpenseValue(variable, timeRange, Expense);
+                return await this.getExpenseValue(variable, timeRange, organizationId, Expense);
             
             case 'bank_balance':
-                return await this.getBankBalanceValue(variable, BankAccount);
+                return await this.getBankBalanceValue(variable, organizationId, BankAccount);
             
             case 'user_count':
-                return await this.getUserCountValue(variable, timeRange, ManualKpiSnapshot);
+                return await this.getUserCountValue(variable, timeRange, organizationId, ManualKpiSnapshot);
             
             case 'custom_metric':
-                return await this.getCustomMetricValue(variable.value, CustomKPI, RevenueCohort);
+                return await this.getCustomMetricValue(variable.value, organizationId, CustomKPI, RevenueCohort);
             
             case 'constant':
                 return variable.value || 0;
@@ -374,9 +393,10 @@ class CustomKPIService {
         }
     }
 
-    // Get revenue value
-    async getRevenueValue(variable, timeRange, RevenueModel) {
+    // Get revenue value - WITH ORGANIZATION FILTER
+    async getRevenueValue(variable, timeRange, organizationId, RevenueModel) {
         const query = {
+            organization: organizationId,
             date: { $gte: timeRange.start, $lte: timeRange.end }
         };
 
@@ -397,9 +417,10 @@ class CustomKPIService {
         return result.length > 0 && result[0].value !== null ? result[0].value : 0;
     }
 
-    // Get expense value
-    async getExpenseValue(variable, timeRange, ExpenseModel) {
+    // Get expense value - WITH ORGANIZATION FILTER
+    async getExpenseValue(variable, timeRange, organizationId, ExpenseModel) {
         const query = {
+            organization: organizationId,
             date: { $gte: timeRange.start, $lte: timeRange.end }
         };
 
@@ -420,14 +441,15 @@ class CustomKPIService {
         return result.length > 0 && result[0].value !== null ? result[0].value : 0;
     }
 
-    // Get bank balance value
-    async getBankBalanceValue(variable, BankAccountModel) {
+    // Get bank balance value - WITH ORGANIZATION FILTER
+    async getBankBalanceValue(variable, organizationId, BankAccountModel) {
         if (variable.aggregation === 'latest' || variable.aggregation === 'sum') {
-            const accounts = await BankAccountModel.find({});
+            const accounts = await BankAccountModel.find({ organization: organizationId });
             return accounts.reduce((sum, acc) => sum + (acc.currentBalance || 0), 0);
         }
         
         const result = await BankAccountModel.aggregate([
+            { $match: { organization: organizationId } },
             {
                 $group: {
                     _id: null,
@@ -439,9 +461,10 @@ class CustomKPIService {
         return result.length > 0 && result[0].value !== null ? result[0].value : 0;
     }
 
-    // Get user count value
-    async getUserCountValue(variable, timeRange, ManualKpiSnapshotModel) {
+    // Get user count value - WITH ORGANIZATION FILTER
+    async getUserCountValue(variable, timeRange, organizationId, ManualKpiSnapshotModel) {
         const snapshots = await ManualKpiSnapshotModel.find({
+            organization: organizationId,
             snapshotDate: { $gte: timeRange.start, $lte: timeRange.end }
         }).sort({ snapshotDate: -1 });
 
@@ -460,24 +483,30 @@ class CustomKPIService {
         }
     }
 
-    // Get custom metric value
-    async getCustomMetricValue(metricName, CustomKPIModel, RevenueCohortModel) {
-        const referencedKpi = await CustomKPIModel.findOne({ name: metricName });
+    // Get custom metric value - WITH ORGANIZATION FILTER
+    async getCustomMetricValue(metricName, organizationId, CustomKPIModel, RevenueCohortModel) {
+        const referencedKpi = await CustomKPIModel.findOne({
+            organization: organizationId,
+            name: metricName
+        });
+        
         if (referencedKpi && referencedKpi.cache && referencedKpi.cache.currentValue !== null) {
             return referencedKpi.cache.currentValue;
         }
 
         if (metricName === 'average_ltv') {
-            const cohorts = await RevenueCohortModel.find({ projectedLTV: { $gt: 0 } });
+            const cohorts = await RevenueCohortModel.find({
+                organization: organizationId,
+                projectedLTV: { $gt: 0 }
+            });
             if (cohorts.length === 0) return 0;
             const sumLTV = cohorts.reduce((sum, c) => sum + (c.projectedLTV || 0), 0);
             return cohorts.length > 0 ? sumLTV / cohorts.length : 0;
         }
 
-        console.warn(`Custom metric ${metricName} not found or has no cached value.`);
-        return 0; // Default if not found or no value
+        console.warn(`Custom metric ${metricName} not found or has no cached value for organization ${organizationId}`);
+        return 0;
     }
-
 
     // Apply filter to query
     applyFilter(query, filter) {
@@ -485,18 +514,17 @@ class CustomKPIService {
         const operator = filter.operator;
         let value = filter.value;
 
-        // Ensure value is appropriate for the operator
         switch (operator) {
             case 'equals':
                 query[field] = value;
                 break;
-            case 'contains': // Case-insensitive regex search
+            case 'contains':
                 query[field] = { $regex: value, $options: 'i' };
                 break;
-            case 'in': // Value should be an array
+            case 'in':
                 query[field] = { $in: Array.isArray(value) ? value : [value] };
                 break;
-            case 'between': // Value should be an array of two elements [min, max]
+            case 'between':
                 if (Array.isArray(value) && value.length === 2) {
                     query[field] = { $gte: value[0], $lte: value[1] };
                 } else {
@@ -516,7 +544,7 @@ class CustomKPIService {
 
     // Get time range
     getTimeRange(timeframe, customTimeframe, targetDate = new Date()) {
-        const target = moment(targetDate).utcOffset(0, true); // Work with UTC dates to avoid timezone issues
+        const target = moment(targetDate).utcOffset(0, true);
         let start, end;
 
         switch (timeframe) {
@@ -541,15 +569,15 @@ class CustomKPIService {
                 end = target.clone().endOf('year');
                 break;
             case 'last_30_days':
-                end = target.clone().endOf('day'); // Ensure end of today
-                start = target.clone().subtract(29, 'days').startOf('day'); // 30 days including today
+                end = target.clone().endOf('day');
+                start = target.clone().subtract(29, 'days').startOf('day');
                 break;
             case 'last_90_days':
                 end = target.clone().endOf('day');
                 start = target.clone().subtract(89, 'days').startOf('day');
                 break;
             case 'all_time':
-                start = moment('2000-01-01').utcOffset(0, true); // A reasonable earliest date
+                start = moment('2000-01-01').utcOffset(0, true);
                 end = target.clone().endOf('day');
                 break;
             case 'custom':
@@ -557,15 +585,14 @@ class CustomKPIService {
                     start = moment(customTimeframe.start).utcOffset(0, true).startOf('day');
                     end = moment(customTimeframe.end).utcOffset(0, true).endOf('day');
                 } else {
-                    // Default to current month if custom is invalid
                     console.warn("Invalid custom timeframe, defaulting to current_month:", customTimeframe);
                     start = target.clone().startOf('month');
                     end = target.clone().endOf('month');
                 }
                 break;
-            case 'latest': // Not a range, but used for single point data like bank balance
+            case 'latest':
                  return { singlePoint: true, date: target.toDate() };
-            default: // Default to current month
+            default:
                 start = target.clone().startOf('month');
                 end = target.clone().endOf('month');
         }
@@ -575,12 +602,11 @@ class CustomKPIService {
     // Format value for display
     formatValue(value, format) {
         if (value === null || value === undefined || (typeof value === 'number' && !isFinite(value))) {
-            return 'N/A'; // Handle null, undefined, Infinity, NaN
+            return 'N/A';
         }
 
-
         let formatted;
-        const decimals = (format && typeof format.decimals === 'number') ? format.decimals : 2; // Default decimals
+        const decimals = (format && typeof format.decimals === 'number') ? format.decimals : 2;
         
         switch (format.type) {
             case 'percentage':
@@ -593,7 +619,7 @@ class CustomKPIService {
             case 'ratio':
                 formatted = value.toFixed(decimals) + ':1';
                 break;
-            default: // 'number' or unspecified
+            default:
                 formatted = this.formatNumber(value, decimals) + (format.suffix || '');
         }
 
@@ -601,22 +627,16 @@ class CustomKPIService {
     }
 
     formatNumber(value, decimals = 0) {
-        // Ensure value is a number before formatting
         if (typeof value !== 'number' || isNaN(value) || !isFinite(value)) {
             return 'N/A';
         }
         
-        // Indian numbering system (Lakhs, Crores)
+        // Indian numbering system
         if (Math.abs(value) >= 10000000) { // 1 Crore
-            return (value / 10000000).toFixed(Math.max(0, decimals - 1)) + 'Cr'; // Adjust decimals for abbreviation
+            return (value / 10000000).toFixed(Math.max(0, decimals - 1)) + 'Cr';
         } else if (Math.abs(value) >= 100000) { // 1 Lakh
             return (value / 100000).toFixed(Math.max(0, decimals - 1)) + 'L';
         }
-        // Standard K, M, B for international, or just plain number
-        // For this example, sticking to L, Cr and then plain.
-        // else if (Math.abs(value) >= 1000) {
-        //     return (value / 1000).toFixed(1) + 'K';
-        // }
         return value.toFixed(decimals);
     }
 
@@ -624,10 +644,9 @@ class CustomKPIService {
     getCurrentTarget(kpi, date) {
         if (!kpi.targets || kpi.targets.length === 0) return null;
         
-        const currentPeriodTarget = moment(date).format('YYYY-MM'); // Assuming targets are monthly
+        const currentPeriodTarget = moment(date).format('YYYY-MM');
         const target = kpi.targets.find(t => t.period === currentPeriodTarget);
         
-        // Fallback to a general target if monthly not found
         if (!target) {
             const generalTarget = kpi.targets.find(t => !t.period || t.period.toLowerCase() === 'general');
             return generalTarget ? generalTarget.value : null;
@@ -645,7 +664,7 @@ class CustomKPIService {
             let shouldAlert = false;
             const currentValue = kpi.cache.currentValue;
 
-            if (currentValue === null || currentValue === undefined) continue; // Cannot check alert if no value
+            if (currentValue === null || currentValue === undefined) continue;
 
             switch (alert.condition) {
                 case 'above':
@@ -654,10 +673,10 @@ class CustomKPIService {
                 case 'below':
                     shouldAlert = currentValue < alert.threshold;
                     break;
-                case 'equals': // Consider a small tolerance for floating point comparisons
+                case 'equals':
                     shouldAlert = Math.abs(currentValue - alert.threshold) < (alert.tolerance || 0.01);
                     break;
-                case 'change_percent': // Absolute percentage change
+                case 'change_percent':
                     shouldAlert = kpi.cache.trend !== null && Math.abs(kpi.cache.trend) > alert.threshold;
                     break;
                 default:
@@ -672,26 +691,16 @@ class CustomKPIService {
 
     // Trigger alert
     async triggerAlert(kpi, alert, currentValue) {
-        // In production, this would send emails, create notifications, etc.
         console.log(`ALERT: KPI "${kpi.displayName}" triggered alert. Current value: ${this.formatValue(currentValue, kpi.displayFormat)}, Condition: ${alert.condition} ${alert.threshold}`);
         
-        // Log alert to database (assuming AlertLog model exists)
-        // const AlertLog = mongoose.models.AlertLog || mongoose.model('AlertLog', new mongoose.Schema({ /* ... */ }));
-        // await AlertLog.create({ 
-        //     kpiId: kpi._id, 
-        //     kpiName: kpi.displayName,
-        //     alertName: alert.name || 'Unnamed Alert',
-        //     condition: alert.condition,
-        //     threshold: alert.threshold,
-        //     currentValue: currentValue,
-        //     triggeredAt: new Date() 
-        // });
+        // In production, send notifications to all relevant users in the organization
+        // You could store alert preferences per user within the organization
     }
 
-    // Bulk calculate all KPIs for a specific user
-    async calculateAllKPIsForUser(userId) {
+    // Calculate all KPIs for an organization - RENAMED AND UPDATED
+    async calculateAllKPIsForOrganization(organizationId) {
         const kpis = await CustomKPI.find({ 
-            createdBy: userId, // Filter by user
+            organization: organizationId,
             isActive: true 
         });
 
@@ -699,7 +708,7 @@ class CustomKPIService {
         
         for (const kpi of kpis) {
             try {
-                const result = await this.calculateKPIValue(kpi._id);
+                const result = await this.calculateKPIValue(kpi._id, organizationId);
                 results.push({ success: true, ...result });
             } catch (error) {
                 results.push({
@@ -713,13 +722,26 @@ class CustomKPIService {
         return results;
     }
 
-    // Get KPI dashboard data for a specific user
-    async getKPIDashboard(userId) {
-        const kpis = await CustomKPI.find({
-            createdBy: userId, // Filter by user
-            isActive: true,
-            isPinned: true // Only pinned KPIs for dashboard
-        }).sort({ category: 1, displayName: 1 });
+    // Get KPI dashboard for organization - UPDATED
+    async getKPIDashboard(organizationId, options = {}) {
+        const query = {
+            organization: organizationId,
+            isActive: true
+        };
+        
+        // Allow filtering by visibility based on user role
+        if (options.userRole && options.userRole !== 'admin') {
+            query.$or = [
+                { visibility: 'all' },
+                { visibility: 'custom', allowedRoles: options.userRole }
+            ];
+        }
+        
+        if (!options.includeUnpinned) {
+            query.isPinned = true;
+        }
+        
+        const kpis = await CustomKPI.find(query).sort({ category: 1, displayName: 1 });
 
         const dashboardData = {
             categories: {},
@@ -727,14 +749,14 @@ class CustomKPIService {
                 total: kpis.length,
                 improving: 0,
                 declining: 0,
-                stable: 0, // Added stable state
+                stable: 0,
                 onTarget: 0,
                 offTarget: 0
             }
         };
 
         for (const kpi of kpis) {
-            if (!kpi.cache) { // Skip if no cache (might happen for newly created KPIs not yet calculated)
+            if (!kpi.cache) {
                 console.warn(`KPI ${kpi.displayName} has no cache, skipping for dashboard.`);
                 continue;
             }
@@ -748,19 +770,19 @@ class CustomKPIService {
                 name: kpi.displayName,
                 value: kpi.cache.currentValue,
                 formattedValue: this.formatValue(kpi.cache.currentValue, kpi.displayFormat),
-                trend: kpi.cache.trend, // Percentage
+                trend: kpi.cache.trend,
                 target: this.getCurrentTarget(kpi, new Date()),
-                visualization: kpi.visualization || { type: 'number_card' }, // Default visualization
-                lastUpdated: kpi.cache.lastCalculated
+                visualization: kpi.visualization || { type: 'number_card' },
+                lastUpdated: kpi.cache.lastCalculated,
+                visibility: kpi.visibility
             };
 
             // Update summary based on trend
             if (kpi.cache.trend === null || kpi.cache.trend === undefined) {
-                 // No trend data, could be first calculation
-            } else if (kpi.cache.trend > 1) dashboardData.summary.improving++; // Trend > 1%
-            else if (kpi.cache.trend < -1) dashboardData.summary.declining++; // Trend < -1%
+                // No trend data
+            } else if (kpi.cache.trend > 1) dashboardData.summary.improving++;
+            else if (kpi.cache.trend < -1) dashboardData.summary.declining++;
             else dashboardData.summary.stable++;
-
 
             if (kpiData.target !== null && kpiData.value !== null) {
                 const isOnTarget = this.checkIfOnTarget(kpi, kpiData.value, kpiData.target);
@@ -775,57 +797,140 @@ class CustomKPIService {
     }
 
     checkIfOnTarget(kpi, value, targetValue) {
-        if (value === null || targetValue === null) return false; // Cannot determine if values are missing
+        if (value === null || targetValue === null) return false;
 
-        // Find target definition, default to 'min' if not specified
         const targetDefinition = kpi.targets 
             ? kpi.targets.find(t => t.value === targetValue || (t.period && t.period === moment().format('YYYY-MM')))
             : null;
         const targetType = (targetDefinition && targetDefinition.type) ? targetDefinition.type : 'min';
         
         switch (targetType) {
-            case 'min': // Value should be greater than or equal to target
+            case 'min':
                 return value >= targetValue;
-            case 'max': // Value should be less than or equal to target
+            case 'max':
                 return value <= targetValue;
-            case 'exact': // Value should be close to target (e.g., within 5%)
+            case 'exact':
                 return Math.abs(value - targetValue) / Math.abs(targetValue) < 0.05; 
-            default: // Default to 'min' logic
+            default:
                 return value >= targetValue;
         }
     }
 
-    // This method initializes (creates) the built-in KPIs for a *new* user.
-    // It now correctly uses `this.builtInKPIs` which is populated by `getBuiltInKPIDefinitions()` in the constructor.
-    async initializeBuiltInKPIsForUser(userId) {
+    // Initialize built-in KPIs for organization - RENAMED AND UPDATED
+    async initializeBuiltInKPIsForOrganization(organizationId, userId) {
         const results = [];
         if (!this.builtInKPIs || this.builtInKPIs.length === 0) {
-            console.warn("No built-in KPI definitions found to initialize for user.");
+            console.warn("No built-in KPI definitions found to initialize for organization.");
             return results;
         }
         
         for (const kpiTemplate of this.builtInKPIs) {
             try {
-                // Check if this KPI already exists for the user to prevent duplicates
-                const existingKPI = await CustomKPI.findOne({ name: kpiTemplate.name, createdBy: userId });
+                // Check if this KPI already exists for the organization
+                const existingKPI = await CustomKPI.findOne({
+                    name: kpiTemplate.name,
+                    organization: organizationId
+                });
+                
                 if (existingKPI) {
                     results.push({ success: true, kpi: existingKPI.name, message: 'KPI already exists' });
                     continue;
                 }
 
                 const kpi = await this.createKPI({
-                    ...kpiTemplate, // Spread the template
-                    isPinned: true, // Default to pinned for built-in KPIs
-                    // createdBy and lastModifiedBy will be set by createKPI
-                }, userId);
+                    ...kpiTemplate,
+                    isPinned: true,
+                    visibility: 'all' // Default visibility for built-in KPIs
+                }, userId, organizationId);
+                
                 results.push({ success: true, kpi: kpi.name, message: 'KPI created' });
             } catch (error) {
-                console.error(`Failed to initialize built-in KPI ${kpiTemplate.name} for user ${userId}:`, error.message);
+                console.error(`Failed to initialize built-in KPI ${kpiTemplate.name} for organization ${organizationId}:`, error.message);
                 results.push({ success: false, kpi: kpiTemplate.name, error: error.message });
             }
         }
         
         return results;
+    }
+
+    // Update KPI - NEW METHOD
+    async updateKPI(kpiId, updates, userId, organizationId) {
+        const kpi = await CustomKPI.findOne({
+            _id: kpiId,
+            organization: organizationId
+        });
+        
+        if (!kpi) {
+            throw new Error('KPI not found or unauthorized');
+        }
+        
+        // If formula or variables changed, validate
+        if (updates.formula || updates.formulaVariables) {
+            const formula = updates.formula || kpi.formula;
+            const variables = updates.formulaVariables || kpi.formulaVariables;
+            
+            const validation = await this.validateFormula(formula, variables);
+            if (!validation.isValid) {
+                throw new Error(`Invalid formula: ${validation.error}`);
+            }
+        }
+        
+        // Update fields
+        Object.keys(updates).forEach(key => {
+            if (key !== '_id' && key !== 'organization') {
+                kpi[key] = updates[key];
+            }
+        });
+        
+        kpi.lastModifiedBy = userId;
+        await kpi.save();
+        
+        // Recalculate if formula changed
+        if (updates.formula || updates.formulaVariables) {
+            await this.calculateKPIValue(kpi._id, organizationId);
+        }
+        
+        return kpi;
+    }
+
+    // Delete KPI - NEW METHOD
+    async deleteKPI(kpiId, organizationId) {
+        const result = await CustomKPI.deleteOne({
+            _id: kpiId,
+            organization: organizationId
+        });
+        
+        if (result.deletedCount === 0) {
+            throw new Error('KPI not found or unauthorized');
+        }
+        
+        return { success: true };
+    }
+
+    // Get KPI history - NEW METHOD
+    async getKPIHistory(kpiId, organizationId, days = 30) {
+        const kpi = await CustomKPI.findOne({
+            _id: kpiId,
+            organization: organizationId
+        });
+        
+        if (!kpi) {
+            throw new Error('KPI not found or unauthorized');
+        }
+        
+        const cutoffDate = moment().subtract(days, 'days').toDate();
+        const history = (kpi.cache.historicalValues || [])
+            .filter(h => h.date > cutoffDate)
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
+        
+        return {
+            kpiId: kpi._id,
+            name: kpi.displayName,
+            history,
+            currentValue: kpi.cache.currentValue,
+            trend: kpi.cache.trend,
+            displayFormat: kpi.displayFormat
+        };
     }
 }
 

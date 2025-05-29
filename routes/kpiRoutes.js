@@ -1,64 +1,86 @@
 // routes/kpiRoutes.js
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
-const kpiController = require('../controllers/kpiController');
+// --- MULTI-TENANCY: Import all necessary middleware ---
+const {
+    protect,
+    requireActiveOrganization,
+    authorizeOrganizationRole
+} = require('../middleware/authMiddleware'); // Ensure path is correct
+const kpiController = require('../controllers/kpiController'); // Ensure this points to the multi-tenancy updated controller
 
-// Apply protect middleware to all routes
-router.use(protect);
+// --- MULTI-TENANCY: Apply global protection and require an active organization for all routes in this file ---
+router.use(protect); // Ensures user is authenticated (already present)
+router.use(requireActiveOrganization); // Ensures user has an active organization context
 
 // --- Manual KPI Snapshot Management ---
-// @route   POST /api/horizon/kpis/snapshots
-// @desc    Create a new manual KPI snapshot for a specific date
-// @access  Private (Founders)
-router.post('/snapshots', kpiController.createManualKpiSnapshot);
+// Assuming 'owner' and 'member' can manage and view KPI snapshots
+router.post(
+    '/snapshots',
+    authorizeOrganizationRole(['owner', 'member']),
+    kpiController.createManualKpiSnapshot
+);
 
-// @route   GET /api/horizon/kpis/snapshots/:date
-// @desc    Get a manual KPI snapshot for a specific date (YYYY-MM-DD)
-// @access  Private (Founders)
-router.get('/snapshots/:date', kpiController.getManualKpiSnapshotByDate);
+router.get(
+    '/snapshots/:date',
+    authorizeOrganizationRole(['owner', 'member']),
+    kpiController.getManualKpiSnapshotByDate
+);
 
-// @route   GET /api/horizon/kpis/snapshots
-// @desc    Get all manual KPI snapshots (paginated, sorted by date)
-// @access  Private (Founders)
-router.get('/snapshots', kpiController.getAllManualKpiSnapshots);
+router.get(
+    '/snapshots',
+    authorizeOrganizationRole(['owner', 'member']),
+    kpiController.getAllManualKpiSnapshots
+);
 
-// @route   PUT /api/horizon/kpis/snapshots/:id
-// @desc    Update an existing manual KPI snapshot by its ID
-// @access  Private (Founders)
-router.put('/snapshots/:id', kpiController.updateManualKpiSnapshot);
+router.put(
+    '/snapshots/:id',
+    authorizeOrganizationRole(['owner', 'member']),
+    kpiController.updateManualKpiSnapshot
+);
 
-// @route   DELETE /api/horizon/kpis/snapshots/:id
-// @desc    Delete a manual KPI snapshot by its ID
-// @access  Private (Founders)
-router.delete('/snapshots/:id', kpiController.deleteManualKpiSnapshot);
+router.delete(
+    '/snapshots/:id',
+    authorizeOrganizationRole(['owner', 'member']), // Or restrict to 'owner' if preferred
+    kpiController.deleteManualKpiSnapshot
+);
 
 
 // --- Derived KPI Endpoints (will now use ManualKpiSnapshotModel) ---
-// @route   GET /api/horizon/kpis/user-growth
-// @desc    Get user growth metrics (Total Users, New Users, DAU, MAU) from latest snapshot
-// @access  Private (Founders)
-router.get('/user-growth', kpiController.getUserGrowthMetrics);
+// Assuming 'owner' and 'member' can view these derived metrics
+router.get(
+    '/user-growth',
+    authorizeOrganizationRole(['owner', 'member']),
+    kpiController.getUserGrowthMetrics
+);
 
-// @route   GET /api/horizon/kpis/dau-mau-history
-// @desc    Get historical DAU and MAU data for charts from snapshots
-// @access  Private (Founders)
-router.get('/dau-mau-history', kpiController.getDauMauHistory);
+router.get(
+    '/dau-mau-history',
+    authorizeOrganizationRole(['owner', 'member']),
+    kpiController.getDauMauHistory
+);
 
-// @route   GET /api/horizon/kpis/feature-usage
-// @desc    Get usage statistics for key features from latest snapshot
-// @access  Private (Founders)
-router.get('/feature-usage', kpiController.getFeatureUsageStats);
+router.get(
+    '/feature-usage',
+    authorizeOrganizationRole(['owner', 'member']),
+    kpiController.getFeatureUsageStats
+);
 
-// @route   GET /api/horizon/kpis/retention
-// @desc    Get basic user retention metrics from latest snapshot
-// @access  Private (Founders)
-router.get('/retention', kpiController.getRetentionMetrics);
+router.get(
+    '/retention',
+    authorizeOrganizationRole(['owner', 'member']),
+    kpiController.getRetentionMetrics
+);
 
 // @route   GET /api/horizon/kpis/active-user-definition
 // @desc    Get the current definition of an "active user" (informational)
-// @access  Private (Founders)
-router.get('/active-user-definition', kpiController.getActiveUserDefinition);
-
+// @access  Private (Founders - now 'owner' or 'member')
+// This route doesn't modify data, so broader access might be fine, but still org-contextual if definition could vary.
+// For simplicity, keeping it consistent.
+router.get(
+    '/active-user-definition',
+    authorizeOrganizationRole(['owner', 'member']),
+    kpiController.getActiveUserDefinition
+);
 
 module.exports = router;

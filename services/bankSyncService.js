@@ -4,8 +4,11 @@ const moment = require('moment');
 const crypto = require('crypto');
 const { getTransactionCategorizer } = require('./transactionCategorizer');
 
-// New Model for Bank Transactions
+// Updated Model for Bank Transactions with multi-tenancy
 const BankTransactionSchema = new mongoose.Schema({
+    // Multi-tenancy field
+    organization: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true },
+    
     bankAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', required: true },
     transactionId: { type: String, required: true }, // Unique ID from bank
     date: { type: Date, required: true },
@@ -45,9 +48,11 @@ const BankTransactionSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now }
 });
 
-BankTransactionSchema.index({ bankAccountId: 1, transactionId: 1 }, { unique: true });
-BankTransactionSchema.index({ date: -1 });
-BankTransactionSchema.index({ reconciliationStatus: 1 });
+// Updated indexes to include organization
+BankTransactionSchema.index({ organization: 1, bankAccountId: 1, transactionId: 1 }, { unique: true });
+BankTransactionSchema.index({ organization: 1, date: -1 });
+BankTransactionSchema.index({ organization: 1, reconciliationStatus: 1 });
+BankTransactionSchema.index({ organization: 1, bankAccountId: 1 });
 
 const BankTransaction = mongoose.model('BankTransaction', BankTransactionSchema);
 
@@ -62,25 +67,37 @@ class BankSyncService {
         };
     }
 
-    // Manual CSV Import
-    async importBankStatement(csvData, bankAccountId, bankFormat, userId) {
+    // Manual CSV Import - Updated for multi-tenancy
+    async importBankStatement(csvData, bankAccountId, bankFormat, userId, organizationId) {
         const importBatchId = this.generateBatchId();
         const transactions = [];
         const errors = [];
         
         try {
+            // Verify bank account belongs to organization
+            const BankAccount = mongoose.model('BankAccount');
+            const bankAccount = await BankAccount.findOne({
+                _id: bankAccountId,
+                organization: organizationId
+            });
+            
+            if (!bankAccount) {
+                throw new Error('Bank account not found or unauthorized');
+            }
+            
             // Parse CSV based on bank format
             const parser = this.supportedFormats[bankFormat] || this.supportedFormats.generic;
             const parsedTransactions = await parser.call(this, csvData);
             
-            // Get transaction categorizer
+            // Get transaction categorizer with organization context
             const categorizer = await getTransactionCategorizer();
             
             // Process each transaction
             for (const txn of parsedTransactions) {
                 try {
-                    // Check for duplicates
+                    // Check for duplicates within organization
                     const existing = await BankTransaction.findOne({
+                        organization: organizationId,
                         bankAccountId,
                         transactionId: txn.transactionId
                     });
@@ -94,15 +111,17 @@ class BankSyncService {
                         continue;
                     }
                     
-                    // Auto-categorize
+                    // Auto-categorize with organization context
                     const categorization = await categorizer.categorizeTransaction(
                         txn.description,
                         Math.abs(txn.amount),
-                        txn.merchantName
+                        txn.merchantName,
+                        organizationId
                     );
                     
                     // Create transaction record
                     const bankTransaction = new BankTransaction({
+                        organization: organizationId,
                         bankAccountId,
                         transactionId: txn.transactionId,
                         date: txn.date,
@@ -134,10 +153,10 @@ class BankSyncService {
                 await BankTransaction.insertMany(transactions);
                 
                 // Update bank account balance
-                await this.updateBankAccountBalance(bankAccountId);
+                await this.updateBankAccountBalance(bankAccountId, organizationId);
                 
                 // Trigger auto-reconciliation
-                await this.autoReconcile(bankAccountId, importBatchId);
+                await this.autoReconcile(bankAccountId, importBatchId, organizationId);
             }
             
             return {
@@ -167,7 +186,7 @@ class BankSyncService {
         }
     }
 
-    // Bank-specific parsers
+    // Bank-specific parsers (remain unchanged as they just parse data)
     parseHDFCFormat(csvData) {
         const lines = csvData.split('\n');
         const transactions = [];
@@ -311,9 +330,10 @@ class BankSyncService {
         return transactions;
     }
 
-    // Auto-reconciliation
-    async autoReconcile(bankAccountId, importBatchId) {
+    // Auto-reconciliation - Updated for multi-tenancy
+    async autoReconcile(bankAccountId, importBatchId, organizationId) {
         const unmatchedTransactions = await BankTransaction.find({
+            organization: organizationId,
             bankAccountId,
             importBatchId,
             reconciliationStatus: 'pending'
@@ -325,8 +345,8 @@ class BankSyncService {
         for (const txn of unmatchedTransactions) {
             try {
                 if (txn.type === 'debit') {
-                    // Try to match with expenses
-                    const potentialMatches = await this.findExpenseMatches(txn);
+                    // Try to match with expenses within same organization
+                    const potentialMatches = await this.findExpenseMatches(txn, organizationId);
                     
                     if (potentialMatches.length === 1 && potentialMatches[0].confidence > 0.9) {
                         // High confidence single match
@@ -339,8 +359,8 @@ class BankSyncService {
                         reviewCount++;
                     }
                 } else {
-                    // Try to match with revenue
-                    const potentialMatches = await this.findRevenueMatches(txn);
+                    // Try to match with revenue within same organization
+                    const potentialMatches = await this.findRevenueMatches(txn, organizationId);
                     
                     if (potentialMatches.length === 1 && potentialMatches[0].confidence > 0.9) {
                         txn.reconciliationStatus = 'matched';
@@ -366,8 +386,8 @@ class BankSyncService {
         };
     }
 
-    // Find matching expenses
-    async findExpenseMatches(bankTransaction) {
+    // Find matching expenses - Updated for multi-tenancy
+    async findExpenseMatches(bankTransaction, organizationId) {
         const Expense = mongoose.model('Expense');
         
         // Date range (±3 days)
@@ -375,6 +395,7 @@ class BankSyncService {
         const dateEnd = moment(bankTransaction.date).add(3, 'days').toDate();
         
         const potentialExpenses = await Expense.find({
+            organization: organizationId,
             date: { $gte: dateStart, $lte: dateEnd },
             amount: {
                 $gte: Math.abs(bankTransaction.amount) * 0.99,
@@ -405,14 +426,15 @@ class BankSyncService {
         return matches.sort((a, b) => b.confidence - a.confidence);
     }
 
-    // Find matching revenue
-    async findRevenueMatches(bankTransaction) {
+    // Find matching revenue - Updated for multi-tenancy
+    async findRevenueMatches(bankTransaction, organizationId) {
         const Revenue = mongoose.model('Revenue');
         
         const dateStart = moment(bankTransaction.date).subtract(3, 'days').toDate();
         const dateEnd = moment(bankTransaction.date).add(3, 'days').toDate();
         
         const potentialRevenues = await Revenue.find({
+            organization: organizationId,
             date: { $gte: dateStart, $lte: dateEnd },
             amount: {
                 $gte: bankTransaction.amount * 0.99,
@@ -482,15 +504,35 @@ class BankSyncService {
         return natural.JaroWinklerDistance(str1, str2);
     }
 
-    // Manual reconciliation
-    async manualReconcile(bankTransactionId, matchType, matchId) {
-        const bankTxn = await BankTransaction.findById(bankTransactionId);
-        if (!bankTxn) throw new Error('Bank transaction not found');
+    // Manual reconciliation - Updated for multi-tenancy
+    async manualReconcile(bankTransactionId, matchType, matchId, organizationId) {
+        const bankTxn = await BankTransaction.findOne({
+            _id: bankTransactionId,
+            organization: organizationId
+        });
+        
+        if (!bankTxn) throw new Error('Bank transaction not found or unauthorized');
         
         if (matchType === 'expense') {
+            // Verify expense belongs to same organization
+            const Expense = mongoose.model('Expense');
+            const expense = await Expense.findOne({
+                _id: matchId,
+                organization: organizationId
+            });
+            if (!expense) throw new Error('Expense not found or unauthorized');
+            
             bankTxn.matchedExpenseId = matchId;
             bankTxn.matchedRevenueId = null;
         } else if (matchType === 'revenue') {
+            // Verify revenue belongs to same organization
+            const Revenue = mongoose.model('Revenue');
+            const revenue = await Revenue.findOne({
+                _id: matchId,
+                organization: organizationId
+            });
+            if (!revenue) throw new Error('Revenue not found or unauthorized');
+            
             bankTxn.matchedRevenueId = matchId;
             bankTxn.matchedExpenseId = null;
         } else if (matchType === 'ignore') {
@@ -502,7 +544,7 @@ class BankSyncService {
         return await bankTxn.save();
     }
 
-    // Helper methods
+    // Helper methods (remain unchanged)
     parseCSVLine(line) {
         // Handle CSV parsing with quotes
         const result = [];
@@ -580,26 +622,37 @@ class BankSyncService {
         return new Date(dateStr);
     }
 
-    async updateBankAccountBalance(bankAccountId) {
+    // Update bank account balance - Updated for multi-tenancy
+    async updateBankAccountBalance(bankAccountId, organizationId) {
         const BankAccount = mongoose.model('BankAccount');
         
-        // Get latest transaction
+        // Get latest transaction for this bank account within organization
         const latestTxn = await BankTransaction.findOne({
+            organization: organizationId,
             bankAccountId,
             balance: { $ne: null }
         }).sort({ date: -1 });
         
         if (latestTxn) {
-            await BankAccount.findByIdAndUpdate(bankAccountId, {
-                currentBalance: latestTxn.balance,
-                lastBalanceUpdate: new Date()
-            });
+            await BankAccount.findOneAndUpdate(
+                {
+                    _id: bankAccountId,
+                    organization: organizationId
+                },
+                {
+                    currentBalance: latestTxn.balance,
+                    lastBalanceUpdate: new Date()
+                }
+            );
         }
     }
 
-    // Get reconciliation summary
-    async getReconciliationSummary(bankAccountId, dateRange) {
-        const query = { bankAccountId };
+    // Get reconciliation summary - Updated for multi-tenancy
+    async getReconciliationSummary(bankAccountId, organizationId, dateRange) {
+        const query = {
+            organization: organizationId,
+            bankAccountId
+        };
         
         if (dateRange) {
             query.date = {
@@ -642,10 +695,68 @@ class BankSyncService {
         return {
             reconciliationStatus: summary,
             categoryBreakdown,
-            lastImport: await BankTransaction.findOne({ bankAccountId })
+            lastImport: await BankTransaction.findOne({
+                organization: organizationId,
+                bankAccountId
+            })
                 .sort({ createdAt: -1 })
                 .select('createdAt importBatchId')
         };
+    }
+
+    // Get pending reconciliations for organization - New method
+    async getPendingReconciliations(organizationId, options = {}) {
+        const query = {
+            organization: organizationId,
+            reconciliationStatus: { $in: ['pending', 'manual_review'] }
+        };
+
+        if (options.bankAccountId) {
+            query.bankAccountId = options.bankAccountId;
+        }
+
+        if (options.dateRange) {
+            query.date = {
+                $gte: options.dateRange.start,
+                $lte: options.dateRange.end
+            };
+        }
+
+        const pendingTransactions = await BankTransaction.find(query)
+            .populate('bankAccountId', 'accountName bankName')
+            .sort({ date: -1 })
+            .limit(options.limit || 100);
+
+        return pendingTransactions;
+    }
+
+    // Bulk reconciliation - New method for multi-tenancy
+    async bulkReconcile(reconciliations, organizationId) {
+        const results = {
+            success: 0,
+            failed: 0,
+            errors: []
+        };
+
+        for (const reconciliation of reconciliations) {
+            try {
+                await this.manualReconcile(
+                    reconciliation.bankTransactionId,
+                    reconciliation.matchType,
+                    reconciliation.matchId,
+                    organizationId
+                );
+                results.success++;
+            } catch (error) {
+                results.failed++;
+                results.errors.push({
+                    bankTransactionId: reconciliation.bankTransactionId,
+                    error: error.message
+                });
+            }
+        }
+
+        return results;
     }
 }
 

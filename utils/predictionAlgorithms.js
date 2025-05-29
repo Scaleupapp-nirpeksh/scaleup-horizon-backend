@@ -2,55 +2,142 @@
 const moment = require('moment');
 const stats = require('simple-statistics');
 
+// Configuration constants
+const CONFIG = {
+    DEFAULT_ALPHA: 0.3,
+    DEFAULT_DISCOUNT_RATE: 0.1,
+    DEFAULT_VARIANCE: 0.1,
+    MAX_PROJECTION_MONTHS: 60,
+    MIN_DATA_POINTS: 2,
+    CONFIDENCE_DECAY_RATE: 0.03,
+    MONTE_CARLO_ITERATIONS: 1000
+};
+
+// Cache for expensive calculations
+const cache = new Map();
+
 class PredictionAlgorithms {
     /**
-     * Calculate exponential smoothing forecast
+     * Calculate exponential smoothing forecast with improved error handling
+     * @param {number[]} data - Historical data points
+     * @param {number} alpha - Smoothing parameter (0-1)
+     * @param {number} periods - Number of periods to forecast
+     * @returns {number[]} Forecasted values
      */
-    static exponentialSmoothing(data, alpha = 0.3, periods = 12) {
-        if (!data || data.length === 0) return [];
-        
-        // Filter out non-numeric values
-        const validData = data.filter(d => typeof d === 'number' && !isNaN(d) && isFinite(d));
-        if (validData.length === 0) return Array(periods).fill(0);
-        
-        const forecast = [validData[0]];
-        
-        // Calculate smoothed values for historical data
-        for (let i = 1; i < validData.length; i++) {
-            forecast[i] = alpha * validData[i] + (1 - alpha) * forecast[i - 1];
+    static exponentialSmoothing(data, alpha = CONFIG.DEFAULT_ALPHA, periods = 12) {
+        // Input validation
+        if (!Array.isArray(data) || data.length === 0) {
+            return Array(periods).fill(0);
         }
         
-        // Project future values
-        const lastValue = forecast[forecast.length - 1];
-        const trend = this.calculateTrend(validData);
+        // Validate alpha
+        alpha = Math.max(0, Math.min(1, alpha));
         
-        for (let i = 0; i < periods; i++) {
-            const projectedValue = lastValue * Math.pow(1 + trend, i + 1);
-            forecast.push(isFinite(projectedValue) ? projectedValue : lastValue);
+        // Filter and validate data
+        const validData = data.filter(d => 
+            typeof d === 'number' && 
+            !isNaN(d) && 
+            isFinite(d) && 
+            d >= 0
+        );
+        
+        if (validData.length === 0) {
+            return Array(periods).fill(0);
         }
         
-        return forecast.slice(validData.length);
+        // Check cache
+        const cacheKey = `exp_smooth_${JSON.stringify(validData)}_${alpha}_${periods}`;
+        if (cache.has(cacheKey)) {
+            return cache.get(cacheKey);
+        }
+        
+        try {
+            // Initialize with first value
+            const smoothed = [validData[0]];
+            
+            // Calculate smoothed values for historical data
+            for (let i = 1; i < validData.length; i++) {
+                const smoothedValue = alpha * validData[i] + (1 - alpha) * smoothed[i - 1];
+                smoothed.push(smoothedValue);
+            }
+            
+            // Calculate trend using robust method
+            const trend = this.calculateTrend(validData);
+            const lastValue = smoothed[smoothed.length - 1];
+            
+            // Project future values with trend dampening
+            const forecast = [];
+            for (let i = 0; i < periods; i++) {
+                // Dampen trend over time for more realistic projections
+                const dampingFactor = Math.exp(-i * 0.05);
+                const effectiveTrend = trend * dampingFactor;
+                
+                const projectedValue = lastValue * Math.pow(1 + effectiveTrend, i + 1);
+                
+                // Ensure reasonable bounds
+                const boundedValue = Math.max(0, projectedValue);
+                forecast.push(isFinite(boundedValue) ? boundedValue : lastValue);
+            }
+            
+            // Cache result
+            cache.set(cacheKey, forecast);
+            
+            // Clear old cache entries if too many
+            if (cache.size > 100) {
+                const firstKey = cache.keys().next().value;
+                cache.delete(firstKey);
+            }
+            
+            return forecast;
+        } catch (error) {
+            console.error('Error in exponentialSmoothing:', error);
+            return Array(periods).fill(validData[validData.length - 1] || 0);
+        }
     }
     
     /**
-     * Calculate trend from historical data
+     * Calculate trend with outlier detection
+     * @param {number[]} data - Historical data
+     * @returns {number} Trend coefficient
      */
     static calculateTrend(data) {
-        if (!data || data.length < 2) return 0;
+        if (!Array.isArray(data) || data.length < CONFIG.MIN_DATA_POINTS) {
+            return 0;
+        }
         
-        // Filter valid numeric data
-        const validData = data.filter(d => typeof d === 'number' && !isNaN(d) && isFinite(d));
-        if (validData.length < 2) return 0;
+        // Filter valid data
+        const validData = data.filter(d => 
+            typeof d === 'number' && 
+            !isNaN(d) && 
+            isFinite(d) && 
+            d >= 0
+        );
+        
+        if (validData.length < CONFIG.MIN_DATA_POINTS) {
+            return 0;
+        }
         
         try {
-            const xValues = Array.from({length: validData.length}, (_, i) => i);
-            const regression = stats.linearRegression([xValues, validData]);
+            // Remove outliers using IQR method
+            const cleanData = this.removeOutliers(validData);
+            if (cleanData.length < CONFIG.MIN_DATA_POINTS) {
+                return 0;
+            }
             
-            const meanValue = stats.mean(validData);
+            // Calculate linear regression
+            const xValues = Array.from({length: cleanData.length}, (_, i) => i);
+            const regression = stats.linearRegression([xValues, cleanData]);
+            
+            const meanValue = stats.mean(cleanData);
             if (meanValue === 0) return 0;
             
+            // Calculate trend as percentage
             const trend = regression.m / meanValue;
-            return isFinite(trend) ? trend : 0;
+            
+            // Cap extreme trends
+            const cappedTrend = Math.max(-0.5, Math.min(0.5, trend));
+            
+            return isFinite(cappedTrend) ? cappedTrend : 0;
         } catch (error) {
             console.error('Error calculating trend:', error);
             return 0;
@@ -58,68 +145,160 @@ class PredictionAlgorithms {
     }
     
     /**
-     * Monte Carlo simulation for runway scenarios
+     * Remove outliers using IQR method
+     * @param {number[]} data - Input data
+     * @returns {number[]} Data without outliers
      */
-    static monteCarloSimulation(params, iterations = 1000) {
-        const results = [];
+    static removeOutliers(data) {
+        if (data.length < 4) return data;
         
-        for (let i = 0; i < iterations; i++) {
-            const scenario = this.runSingleScenario(params);
-            results.push(scenario);
+        try {
+            const sorted = [...data].sort((a, b) => a - b);
+            const q1 = stats.quantile(sorted, 0.25);
+            const q3 = stats.quantile(sorted, 0.75);
+            const iqr = q3 - q1;
+            
+            const lowerBound = q1 - 1.5 * iqr;
+            const upperBound = q3 + 1.5 * iqr;
+            
+            return data.filter(d => d >= lowerBound && d <= upperBound);
+        } catch (error) {
+            return data;
+        }
+    }
+    
+    /**
+     * Optimized Monte Carlo simulation
+     * @param {Object} params - Simulation parameters
+     * @param {number} iterations - Number of iterations
+     * @returns {Object} Simulation results
+     */
+    static monteCarloSimulation(params, iterations = CONFIG.MONTE_CARLO_ITERATIONS) {
+        // Validate inputs
+        const validParams = {
+            initialCash: Math.max(0, params.initialCash || 0),
+            monthlyBurn: Math.max(0, params.monthlyBurn || 0),
+            monthlyRevenue: Math.max(0, params.monthlyRevenue || 0),
+            burnGrowthRate: Math.max(-0.5, Math.min(0.5, params.burnGrowthRate || 0)),
+            revenueGrowthRate: Math.max(-0.5, Math.min(0.5, params.revenueGrowthRate || 0)),
+            variance: Math.max(0, Math.min(0.5, params.variance || CONFIG.DEFAULT_VARIANCE))
+        };
+        
+        // Check if simulation is meaningful
+        if (validParams.initialCash === 0 || validParams.monthlyBurn === 0) {
+            return {
+                p10: 0,
+                p50: 0,
+                p90: 0,
+                mean: 0,
+                stdDev: 0,
+                scenarios: []
+            };
         }
         
-        // Calculate percentiles
-        const runwayMonths = results.map(r => r.runwayMonths).sort((a, b) => a - b);
+        // Run simulations in batches for better performance
+        const batchSize = 100;
+        const results = [];
+        
+        for (let batch = 0; batch < iterations; batch += batchSize) {
+            const batchResults = [];
+            const currentBatchSize = Math.min(batchSize, iterations - batch);
+            
+            for (let i = 0; i < currentBatchSize; i++) {
+                batchResults.push(this.runSingleScenario(validParams));
+            }
+            
+            results.push(...batchResults);
+        }
+        
+        // Calculate statistics
+        const runwayMonths = results
+            .map(r => r.runwayMonths)
+            .filter(r => isFinite(r))
+            .sort((a, b) => a - b);
+        
+        if (runwayMonths.length === 0) {
+            return {
+                p10: 0,
+                p50: 0,
+                p90: 0,
+                mean: 0,
+                stdDev: 0,
+                scenarios: results
+            };
+        }
         
         return {
-            p10: runwayMonths[Math.floor(iterations * 0.1)] || 0,
-            p50: runwayMonths[Math.floor(iterations * 0.5)] || 0,
-            p90: runwayMonths[Math.floor(iterations * 0.9)] || 0,
-            mean: stats.mean(runwayMonths) || 0,
-            stdDev: stats.standardDeviation(runwayMonths) || 0,
-            scenarios: results
+            p10: runwayMonths[Math.floor(runwayMonths.length * 0.1)] || 0,
+            p50: runwayMonths[Math.floor(runwayMonths.length * 0.5)] || 0,
+            p90: runwayMonths[Math.floor(runwayMonths.length * 0.9)] || 0,
+            mean: stats.mean(runwayMonths),
+            stdDev: runwayMonths.length > 1 ? stats.standardDeviation(runwayMonths) : 0,
+            scenarios: results.slice(0, 100) // Limit returned scenarios for performance
         };
     }
     
     /**
-     * Run a single scenario with random variations
+     * Run single scenario with improved randomness
+     * @param {Object} params - Scenario parameters
+     * @returns {Object} Scenario result
      */
     static runSingleScenario(params) {
-        let cash = params.initialCash || 0;
+        let cash = params.initialCash;
         let month = 0;
-        let monthlyBurn = params.monthlyBurn || 0;
-        let monthlyRevenue = params.monthlyRevenue || 0;
+        let monthlyBurn = params.monthlyBurn;
+        let monthlyRevenue = params.monthlyRevenue;
         
-        const burnGrowthRate = params.burnGrowthRate || 0;
-        const revenueGrowthRate = params.revenueGrowthRate || 0;
-        const variance = params.variance || 0.1;
+        const maxMonths = CONFIG.MAX_PROJECTION_MONTHS;
         
-        while (cash > 0 && month < 60) { // Max 60 months
-            // Apply random variance
-            const burnVariance = 1 + (Math.random() - 0.5) * 2 * variance;
-            const revenueVariance = 1 + (Math.random() - 0.5) * 2 * variance;
+        while (cash > 0 && month < maxMonths) {
+            // Use Box-Muller transform for better normal distribution
+            const burnVariance = this.generateNormalRandom(1, params.variance);
+            const revenueVariance = this.generateNormalRandom(1, params.variance);
             
-            const actualBurn = monthlyBurn * burnVariance;
-            const actualRevenue = monthlyRevenue * revenueVariance;
+            // Ensure non-negative values
+            const actualBurn = Math.max(0, monthlyBurn * burnVariance);
+            const actualRevenue = Math.max(0, monthlyRevenue * revenueVariance);
             
             cash = cash + actualRevenue - actualBurn;
             
-            // Apply growth rates
-            monthlyBurn *= (1 + burnGrowthRate);
-            monthlyRevenue *= (1 + revenueGrowthRate);
+            // Apply growth with compounding
+            monthlyBurn *= (1 + params.burnGrowthRate);
+            monthlyRevenue *= (1 + params.revenueGrowthRate);
             
             month++;
+            
+            // Early exit if burn becomes unrealistic
+            if (monthlyBurn > params.initialCash * 10) {
+                break;
+            }
         }
         
         return {
             runwayMonths: month,
             finalCash: Math.max(0, cash),
-            breakEven: monthlyRevenue >= monthlyBurn
+            breakEven: monthlyRevenue >= monthlyBurn,
+            burnMultiple: monthlyBurn / params.monthlyBurn
         };
     }
     
     /**
-     * Calculate fundraising probability based on multiple factors
+     * Generate normal random number using Box-Muller transform
+     * @param {number} mean - Mean value
+     * @param {number} stdDev - Standard deviation
+     * @returns {number} Random value
+     */
+    static generateNormalRandom(mean, stdDev) {
+        const u1 = Math.random();
+        const u2 = Math.random();
+        const z0 = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+        return mean + z0 * stdDev;
+    }
+    
+    /**
+     * Calculate fundraising probability with validation
+     * @param {Object} factors - Scoring factors
+     * @returns {number} Probability (0-1)
      */
     static calculateFundraisingProbability(factors) {
         const weights = {
@@ -128,416 +307,452 @@ class PredictionAlgorithms {
             marketConditions: 0.15,
             teamStrength: 0.15,
             productMarketFit: 0.15,
-            revenue: 0.10  // Changed from previousRounds
+            revenue: 0.10
         };
         
-        let totalScore = 0;
+        let weightedSum = 0;
         let totalWeight = 0;
         
-        for (const [factor, score] of Object.entries(factors)) {
-            if (weights[factor] && typeof score === 'number' && !isNaN(score)) {
-                totalScore += score * weights[factor];
-                totalWeight += weights[factor];
+        for (const [factor, weight] of Object.entries(weights)) {
+            const score = factors[factor];
+            
+            // Validate and normalize score to 0-1 range
+            if (typeof score === 'number' && !isNaN(score)) {
+                const normalizedScore = Math.max(0, Math.min(1, score));
+                weightedSum += normalizedScore * weight;
+                totalWeight += weight;
             }
         }
         
-        return totalWeight > 0 ? totalScore / totalWeight : 0.5;
+        // Return weighted average or default
+        const probability = totalWeight > 0 ? weightedSum / totalWeight : 0.5;
+        return Math.max(0, Math.min(1, probability));
     }
     
     /**
-     * Project cash flow with seasonality
+     * Project cash flow with improved seasonality
+     * @param {Array} historicalData - Historical cash flow data
+     * @param {number} periods - Number of periods to project
+     * @param {boolean} seasonality - Apply seasonality adjustments
+     * @returns {Array} Projected cash flow
      */
     static projectCashFlow(historicalData, periods = 12, seasonality = true) {
-        if (!historicalData || historicalData.length === 0) {
-            return Array(periods).fill({
-                period: 0,
-                revenue: 0,
-                expenses: 0,
-                netCashFlow: 0,
-                confidence: 0.5
-            }).map((item, index) => ({...item, period: index + 1}));
+        // Handle empty or invalid data
+        if (!Array.isArray(historicalData) || historicalData.length === 0) {
+            return this.generateEmptyProjections(periods);
         }
+        
+        // Filter valid data points
+        const validData = historicalData.filter(d => 
+            d && 
+            typeof d.revenue === 'number' && 
+            typeof d.expenses === 'number' &&
+            isFinite(d.revenue) &&
+            isFinite(d.expenses)
+        );
+        
+        if (validData.length === 0) {
+            return this.generateEmptyProjections(periods);
+        }
+        
+        // Extract and clean data
+        const revenues = validData.map(d => Math.max(0, d.revenue));
+        const expenses = validData.map(d => Math.max(0, d.expenses));
+        
+        // Calculate trends with minimum data check
+        const revenueTrend = validData.length >= CONFIG.MIN_DATA_POINTS ? 
+            this.calculateTrend(revenues) : 0;
+        const expenseTrend = validData.length >= CONFIG.MIN_DATA_POINTS ? 
+            this.calculateTrend(expenses) : 0;
+        
+        // Calculate seasonality
+        const seasonalFactors = seasonality && validData.length >= 12 ? 
+            this.calculateSeasonality(validData) : Array(12).fill(1);
+        
+        // Use recent average as base
+        const recentCount = Math.min(3, validData.length);
+        const recentRevenues = revenues.slice(-recentCount);
+        const recentExpenses = expenses.slice(-recentCount);
+        
+        let baseRevenue = stats.mean(recentRevenues);
+        let baseExpenses = stats.mean(recentExpenses);
         
         const projections = [];
         
-        // Extract trends
-        const revenues = historicalData.map(d => d.revenue || 0);
-        const expenses = historicalData.map(d => d.expenses || 0);
-        
-        const revenueTrend = this.calculateTrend(revenues);
-        const expenseTrend = this.calculateTrend(expenses);
-        
-        // Calculate seasonality factors if enabled
-        const seasonalFactors = seasonality ? this.calculateSeasonality(historicalData) : null;
-        
-        // Base values (last known values)
-        let baseRevenue = revenues[revenues.length - 1] || 0;
-        let baseExpenses = expenses[expenses.length - 1] || 0;
-        
         for (let i = 0; i < periods; i++) {
-            const monthIndex = (historicalData.length + i) % 12;
-            const seasonalFactor = seasonalFactors ? seasonalFactors[monthIndex] : 1;
+            const monthIndex = (validData.length + i) % 12;
+            const seasonalFactor = seasonalFactors[monthIndex];
             
-            const projectedRevenue = baseRevenue * (1 + revenueTrend) * seasonalFactor;
-            const projectedExpenses = baseExpenses * (1 + expenseTrend);
+            // Apply trends with dampening
+            const trendDampening = Math.exp(-i * 0.02);
+            const effectiveRevenueTrend = revenueTrend * trendDampening;
+            const effectiveExpenseTrend = expenseTrend * trendDampening;
+            
+            const projectedRevenue = baseRevenue * (1 + effectiveRevenueTrend) * seasonalFactor;
+            const projectedExpenses = baseExpenses * (1 + effectiveExpenseTrend);
+            
+            const netCashFlow = projectedRevenue - projectedExpenses;
             
             projections.push({
                 period: i + 1,
-                revenue: isFinite(projectedRevenue) ? projectedRevenue : baseRevenue,
-                expenses: isFinite(projectedExpenses) ? projectedExpenses : baseExpenses,
-                netCashFlow: projectedRevenue - projectedExpenses,
-                confidence: Math.max(0.5, 1 - (i * 0.03)) // Confidence decreases over time
+                revenue: Math.max(0, isFinite(projectedRevenue) ? projectedRevenue : baseRevenue),
+                expenses: Math.max(0, isFinite(projectedExpenses) ? projectedExpenses : baseExpenses),
+                netCashFlow: isFinite(netCashFlow) ? netCashFlow : 0,
+                confidence: Math.max(0.3, 1 - (i * CONFIG.CONFIDENCE_DECAY_RATE))
             });
             
-            baseRevenue = projectedRevenue;
-            baseExpenses = projectedExpenses;
+            // Update base values for next iteration
+            baseRevenue = projections[i].revenue;
+            baseExpenses = projections[i].expenses;
         }
         
         return projections;
     }
     
     /**
-     * Calculate seasonality factors from historical data
+     * Generate empty projections
+     * @param {number} periods - Number of periods
+     * @returns {Array} Empty projections
+     */
+    static generateEmptyProjections(periods) {
+        return Array(periods).fill(null).map((_, i) => ({
+            period: i + 1,
+            revenue: 0,
+            expenses: 0,
+            netCashFlow: 0,
+            confidence: 0.5
+        }));
+    }
+    
+    /**
+     * Calculate seasonality with validation
+     * @param {Array} data - Historical data with dates
+     * @returns {Array} Monthly seasonality factors
      */
     static calculateSeasonality(data) {
-        if (!data || data.length === 0) {
-            return Array(12).fill(1);
-        }
-        
-        const monthlyAverages = Array(12).fill(0);
+        const monthlyTotals = Array(12).fill(0);
         const monthlyCounts = Array(12).fill(0);
+        const validData = [];
         
+        // Aggregate by month
         data.forEach(item => {
-            if (item.date) {
+            if (item.date && item.revenue > 0) {
                 const month = moment(item.date).month();
-                monthlyAverages[month] += item.revenue || 0;
-                monthlyCounts[month]++;
+                if (month >= 0 && month < 12) {
+                    monthlyTotals[month] += item.revenue;
+                    monthlyCounts[month]++;
+                    validData.push(item.revenue);
+                }
             }
         });
         
-        // Calculate average for each month
-        for (let i = 0; i < 12; i++) {
-            if (monthlyCounts[i] > 0) {
-                monthlyAverages[i] /= monthlyCounts[i];
-            }
-        }
-        
-        // Calculate overall average
-        const validAverages = monthlyAverages.filter(a => a > 0);
-        if (validAverages.length === 0) {
+        // Need data for at least 6 months
+        const monthsWithData = monthlyCounts.filter(c => c > 0).length;
+        if (monthsWithData < 6 || validData.length === 0) {
             return Array(12).fill(1);
         }
         
-        const overallAverage = stats.mean(validAverages);
-        
-        // Calculate seasonality factors
-        return monthlyAverages.map(avg => 
-            avg > 0 && overallAverage > 0 ? avg / overallAverage : 1
+        // Calculate averages
+        const monthlyAverages = monthlyTotals.map((total, i) => 
+            monthlyCounts[i] > 0 ? total / monthlyCounts[i] : 0
         );
+        
+        // Calculate overall average (excluding zero months)
+        const nonZeroAverages = monthlyAverages.filter(a => a > 0);
+        if (nonZeroAverages.length === 0) {
+            return Array(12).fill(1);
+        }
+        
+        const overallAverage = stats.mean(nonZeroAverages);
+        
+        // Calculate factors with smoothing
+        return monthlyAverages.map((avg, i) => {
+            if (avg === 0 || monthlyCounts[i] === 0) {
+                // Use average of adjacent months
+                const prev = monthlyAverages[(i + 11) % 12];
+                const next = monthlyAverages[(i + 1) % 12];
+                if (prev > 0 && next > 0) {
+                    avg = (prev + next) / 2;
+                } else {
+                    return 1;
+                }
+            }
+            
+            const factor = avg / overallAverage;
+            // Limit extreme seasonality
+            return Math.max(0.5, Math.min(2, factor));
+        });
     }
     
     /**
-     * Cohort retention projection using power law
+     * Improved cohort retention projection
+     * @param {number} initialUsers - Starting user count
+     * @param {Array} historicalRetention - Historical retention rates
+     * @param {number} projectionMonths - Months to project
+     * @returns {Array} Retention projections
      */
     static projectCohortRetention(initialUsers, historicalRetention, projectionMonths) {
-        if (!initialUsers || initialUsers <= 0 || !historicalRetention || historicalRetention.length === 0) {
-            return Array(projectionMonths).fill({
-                month: 0,
-                retention: 0,
-                activeUsers: 0,
-                churnedUsers: initialUsers || 0
-            }).map((item, index) => ({...item, month: index}));
+        // Validate inputs
+        if (!initialUsers || initialUsers <= 0) {
+            return this.generateEmptyRetentionProjections(projectionMonths);
+        }
+        
+        if (!Array.isArray(historicalRetention) || historicalRetention.length === 0) {
+            return this.generateDefaultRetentionProjections(initialUsers, projectionMonths);
+        }
+        
+        // Clean retention data
+        const validRetention = historicalRetention
+            .map(r => typeof r === 'number' ? r : 0)
+            .map(r => Math.max(0, Math.min(1, r)))
+            .filter(r => r > 0);
+        
+        if (validRetention.length === 0) {
+            return this.generateDefaultRetentionProjections(initialUsers, projectionMonths);
         }
         
         try {
-            // Filter valid retention rates
-            const validRetention = historicalRetention.filter(r => 
-                typeof r === 'number' && !isNaN(r) && r > 0 && r <= 1
-            );
-            
-            if (validRetention.length < 2) {
-                // Not enough data for regression, use simple decay
-                const projections = [];
-                const decayRate = validRetention[0] || 0.5;
-                
-                for (let month = 0; month < projectionMonths; month++) {
-                    const retention = month === 0 ? 1 : decayRate * Math.pow(0.9, month - 1);
-                    const activeUsers = Math.round(initialUsers * Math.max(0, Math.min(1, retention)));
-                    
-                    projections.push({
-                        month,
-                        retention: Math.max(0, Math.min(1, retention)),
-                        activeUsers,
-                        churnedUsers: initialUsers - activeUsers
-                    });
-                }
-                
-                return projections;
+            // Use different models based on data availability
+            if (validRetention.length >= 6) {
+                return this.powerLawRetention(initialUsers, validRetention, projectionMonths);
+            } else if (validRetention.length >= 3) {
+                return this.exponentialRetention(initialUsers, validRetention, projectionMonths);
+            } else {
+                return this.simpleRetention(initialUsers, validRetention, projectionMonths);
             }
-            
-            // Fit power law: retention = a * t^b
-            const periods = validRetention.map((_, i) => i + 1);
-            const logPeriods = periods.map(p => Math.log(p));
-            const logRetention = validRetention.map(r => Math.log(r));
-            
-            const regression = stats.linearRegression([logPeriods, logRetention]);
-            const a = Math.exp(regression.b);
-            const b = regression.m;
-            
-            const projections = [];
-            
-            for (let month = 0; month < projectionMonths; month++) {
-                const retention = month === 0 ? 1 : a * Math.pow(month, b);
-                const safeRetention = Math.max(0, Math.min(1, isFinite(retention) ? retention : 0));
-                const activeUsers = Math.round(initialUsers * safeRetention);
-                
-                projections.push({
-                    month,
-                    retention: safeRetention,
-                    activeUsers,
-                    churnedUsers: initialUsers - activeUsers
-                });
-            }
-            
-            return projections;
         } catch (error) {
-            console.error('Error in projectCohortRetention:', error);
-            // Return simple decay on error
-            return Array(projectionMonths).fill(null).map((_, month) => ({
-                month,
-                retention: Math.pow(0.8, month),
-                activeUsers: Math.round(initialUsers * Math.pow(0.8, month)),
-                churnedUsers: initialUsers - Math.round(initialUsers * Math.pow(0.8, month))
-            }));
+            console.error('Error in retention projection:', error);
+            return this.generateDefaultRetentionProjections(initialUsers, projectionMonths);
         }
     }
     
     /**
-     * Calculate cohort LTV with confidence intervals
+     * Power law retention model
      */
-    static calculateCohortLTV(cohortData, discountRate = 0.1) {
+    static powerLawRetention(initialUsers, retention, months) {
+        const periods = retention.map((_, i) => i + 1);
+        const logPeriods = periods.map(p => Math.log(p));
+        const logRetention = retention.map(r => Math.log(Math.max(0.001, r)));
+        
+        const regression = stats.linearRegression([logPeriods, logRetention]);
+        const a = Math.exp(regression.b);
+        const b = regression.m;
+        
+        const projections = [];
+        
+        for (let month = 0; month < months; month++) {
+            let retentionRate;
+            if (month === 0) {
+                retentionRate = 1;
+            } else if (month < retention.length) {
+                retentionRate = retention[month - 1];
+            } else {
+                retentionRate = a * Math.pow(month, b);
+            }
+            
+            retentionRate = Math.max(0, Math.min(1, retentionRate));
+            const activeUsers = Math.round(initialUsers * retentionRate);
+            
+            projections.push({
+                month,
+                retention: retentionRate,
+                activeUsers: Math.max(0, activeUsers),
+                churnedUsers: initialUsers - activeUsers
+            });
+        }
+        
+        return projections;
+    }
+    
+    /**
+     * Generate empty retention projections
+     */
+    static generateEmptyRetentionProjections(months) {
+        return Array(months).fill(null).map((_, i) => ({
+            month: i,
+            retention: 0,
+            activeUsers: 0,
+            churnedUsers: 0
+        }));
+    }
+    
+    /**
+     * Generate default retention with standard decay
+     */
+    static generateDefaultRetentionProjections(initialUsers, months) {
+        const defaultDecay = 0.85; // 15% churn per month
+        return Array(months).fill(null).map((_, month) => {
+            const retention = Math.pow(defaultDecay, month);
+            const activeUsers = Math.round(initialUsers * retention);
+            return {
+                month,
+                retention,
+                activeUsers,
+                churnedUsers: initialUsers - activeUsers
+            };
+        });
+    }
+    
+    /**
+     * Calculate cohort LTV with improved error handling
+     * @param {Object} cohortData - Cohort information
+     * @param {number} discountRate - Annual discount rate
+     * @returns {Object} LTV calculations
+     */
+    static calculateCohortLTV(cohortData, discountRate = CONFIG.DEFAULT_DISCOUNT_RATE) {
+        // Comprehensive validation
+        if (!cohortData || !cohortData.metrics || !Array.isArray(cohortData.metrics)) {
+            return this.getEmptyLTVResult();
+        }
+        
+        const initialUsers = cohortData.initialUsers || 0;
+        if (initialUsers <= 0) {
+            return this.getEmptyLTVResult();
+        }
+        
+        // Extract and validate metrics
+        const validMetrics = cohortData.metrics.filter(m => 
+            m && 
+            typeof m.revenue === 'number' && 
+            typeof m.activeUsers === 'number' &&
+            m.revenue >= 0 && 
+            m.activeUsers >= 0
+        );
+        
+        if (validMetrics.length === 0) {
+            return this.getEmptyLTVResult();
+        }
+        
         try {
-            // Validate input
-            if (!cohortData || !cohortData.metrics || cohortData.metrics.length === 0) {
-                return {
-                    ltv: 0,
-                    ltvPerUser: 0,
-                    paybackPeriod: null,
-                    confidence: 0
-                };
-            }
-            
-            const initialUsers = cohortData.initialUsers || 0;
-            if (initialUsers === 0) {
-                return {
-                    ltv: 0,
-                    ltvPerUser: 0,
-                    paybackPeriod: null,
-                    confidence: 0
-                };
-            }
-            
-            // Extract and validate data
-            const monthlyRevenues = cohortData.metrics.map(m => {
-                const revenue = m.revenue || 0;
-                return isFinite(revenue) ? revenue : 0;
-            });
-            
-            const activeUsers = cohortData.metrics.map(m => {
-                const users = m.activeUsers || 0;
-                return isFinite(users) ? users : 0;
-            });
-            
-            // Check if we have any valid data
-            const hasRevenue = monthlyRevenues.some(r => r > 0);
-            const hasUsers = activeUsers.some(u => u > 0);
-            
-            if (!hasRevenue || !hasUsers) {
-                return {
-                    ltv: 0,
-                    ltvPerUser: 0,
-                    paybackPeriod: null,
-                    confidence: 0
-                };
-            }
-            
-            // Calculate average revenue per user for each period
-            const arpu = monthlyRevenues.map((rev, i) => {
-                if (activeUsers[i] > 0 && isFinite(rev)) {
-                    return rev / activeUsers[i];
+            // Calculate ARPU for each period
+            const arpuData = validMetrics.map(m => {
+                if (m.activeUsers > 0) {
+                    return m.revenue / m.activeUsers;
                 }
                 return 0;
             });
             
-            // Filter out invalid ARPU values
-            const validArpu = arpu.filter(a => isFinite(a) && a >= 0);
-            if (validArpu.length === 0) {
-                return {
-                    ltv: 0,
-                    ltvPerUser: 0,
-                    paybackPeriod: null,
-                    confidence: 0
-                };
-            }
-            
             // Project future ARPU
-            const projectedARPU = this.exponentialSmoothing(arpu, 0.3, 24);
+            const futureMonths = Math.max(24, validMetrics.length * 2);
+            const projectedARPU = this.exponentialSmoothing(arpuData, 0.3, futureMonths);
             
-            // Project future retention
-            const retentionRates = activeUsers.map(users => {
-                const rate = users / initialUsers;
-                return isFinite(rate) ? Math.max(0, Math.min(1, rate)) : 0;
-            });
+            // Calculate retention rates
+            const retentionRates = validMetrics.map(m => 
+                Math.min(1, m.activeUsers / initialUsers)
+            );
             
+            // Project retention
             const projectedRetention = this.projectCohortRetention(
                 initialUsers,
                 retentionRates,
-                24
+                futureMonths + validMetrics.length
             );
             
-            // Calculate LTV with NPV
+            // Calculate NPV of future cash flows
             let ltv = 0;
-            const allARPU = [...arpu, ...projectedARPU];
+            const monthlyDiscountRate = discountRate / 12;
             
-            for (let i = 0; i < Math.min(allARPU.length, projectedRetention.length); i++) {
-                const discountFactor = Math.pow(1 + discountRate / 12, -i);
-                const monthlyValue = allARPU[i] * projectedRetention[i].retention;
-                
-                if (isFinite(monthlyValue) && isFinite(discountFactor)) {
-                    ltv += monthlyValue * discountFactor;
+            // Historical revenue
+            validMetrics.forEach((metric, i) => {
+                const discountFactor = Math.pow(1 + monthlyDiscountRate, -i);
+                ltv += (metric.revenue / initialUsers) * discountFactor;
+            });
+            
+            // Projected revenue
+            for (let i = 0; i < projectedARPU.length; i++) {
+                const monthIndex = validMetrics.length + i;
+                if (monthIndex < projectedRetention.length) {
+                    const discountFactor = Math.pow(1 + monthlyDiscountRate, -monthIndex);
+                    const monthlyRevenue = projectedARPU[i] * projectedRetention[monthIndex].retention;
+                    ltv += monthlyRevenue * discountFactor;
                 }
             }
             
-            // Ensure ltv is valid
-            if (!isFinite(ltv)) {
-                ltv = 0;
-            }
-            
-            const totalLTV = ltv * initialUsers;
             const paybackPeriod = this.calculatePaybackPeriod(cohortData, ltv);
             const confidence = this.calculateLTVConfidence(cohortData);
             
             return {
-                ltv: isFinite(totalLTV) ? totalLTV : 0,
-                ltvPerUser: isFinite(ltv) ? ltv : 0,
-                paybackPeriod: isFinite(paybackPeriod) && paybackPeriod !== Infinity ? paybackPeriod : null,
-                confidence: isFinite(confidence) ? confidence : 0
+                ltv: ltv * initialUsers,
+                ltvPerUser: ltv,
+                paybackPeriod: paybackPeriod,
+                confidence: confidence,
+                projectedMonths: futureMonths + validMetrics.length
             };
         } catch (error) {
-            console.error('Error in calculateCohortLTV:', error);
+            console.error('Error calculating LTV:', error);
+            return this.getEmptyLTVResult();
+        }
+    }
+    
+    /**
+     * Get empty LTV result
+     */
+    static getEmptyLTVResult() {
+        return {
+            ltv: 0,
+            ltvPerUser: 0,
+            paybackPeriod: null,
+            confidence: 0,
+            projectedMonths: 0
+        };
+    }
+    
+    /**
+     * Simple retention model for limited data
+     */
+    static simpleRetention(initialUsers, retention, months) {
+        const avgRetention = stats.mean(retention);
+        const decayRate = Math.pow(avgRetention, 1 / retention.length);
+        
+        return Array(months).fill(null).map((_, month) => {
+            let retentionRate;
+            if (month < retention.length) {
+                retentionRate = month === 0 ? 1 : retention[month - 1];
+            } else {
+                retentionRate = Math.pow(decayRate, month);
+            }
+            
+            const activeUsers = Math.round(initialUsers * retentionRate);
             return {
-                ltv: 0,
-                ltvPerUser: 0,
-                paybackPeriod: null,
-                confidence: 0
+                month,
+                retention: Math.max(0, Math.min(1, retentionRate)),
+                activeUsers: Math.max(0, activeUsers),
+                churnedUsers: initialUsers - activeUsers
             };
-        }
+        });
     }
     
     /**
-     * Calculate payback period for CAC
+     * Exponential retention model
      */
-    static calculatePaybackPeriod(cohortData, ltvPerUser) {
-        try {
-            const cac = cohortData.averageCAC || 0;
-            if (cac === 0) return 0;
-            
-            let cumulativeRevenue = 0;
-            let month = 0;
-            
-            for (const metric of cohortData.metrics) {
-                if (metric.activeUsers > 0 && metric.revenue > 0) {
-                    const revenuePerUser = metric.revenue / metric.activeUsers;
-                    if (isFinite(revenuePerUser)) {
-                        cumulativeRevenue += revenuePerUser;
-                        month++;
-                        
-                        if (cumulativeRevenue >= cac) {
-                            return month;
-                        }
-                    }
-                }
+    static exponentialRetention(initialUsers, retention, months) {
+        // Fit exponential decay
+        const periods = retention.map((_, i) => i + 1);
+        const logRetention = retention.map(r => Math.log(Math.max(0.001, r)));
+        
+        const regression = stats.linearRegression([periods, logRetention]);
+        const decayRate = Math.exp(regression.m);
+        
+        return Array(months).fill(null).map((_, month) => {
+            let retentionRate;
+            if (month === 0) {
+                retentionRate = 1;
+            } else if (month <= retention.length) {
+                retentionRate = retention[month - 1];
+            } else {
+                retentionRate = Math.exp(regression.b) * Math.pow(decayRate, month);
             }
             
-            // If not paid back yet, project
-            const validMetrics = cohortData.metrics.filter(m => 
-                m.activeUsers > 0 && m.revenue > 0
-            );
+            retentionRate = Math.max(0, Math.min(1, retentionRate));
+            const activeUsers = Math.round(initialUsers * retentionRate);
             
-            if (validMetrics.length > 0) {
-                const arpuValues = validMetrics.map(m => m.revenue / m.activeUsers)
-                    .filter(a => isFinite(a));
-                
-                if (arpuValues.length > 0) {
-                    const avgARPU = stats.mean(arpuValues);
-                    
-                    if (avgARPU > 0 && isFinite(avgARPU)) {
-                        const remainingMonths = Math.ceil((cac - cumulativeRevenue) / avgARPU);
-                        if (isFinite(remainingMonths) && remainingMonths > 0) {
-                            return month + remainingMonths;
-                        }
-                    }
-                }
-            }
-            
-            return null; // Cannot calculate payback
-        } catch (error) {
-            console.error('Error in calculatePaybackPeriod:', error);
-            return null;
-        }
-    }
-    
-    /**
-     * Calculate confidence level for LTV prediction
-     */
-    static calculateLTVConfidence(cohortData) {
-        try {
-            const validMetrics = cohortData.metrics.filter(m => 
-                m.revenue > 0 && isFinite(m.revenue)
-            );
-            
-            const dataPoints = validMetrics.length;
-            if (dataPoints === 0) return 0;
-            
-            const consistency = this.calculateDataConsistency(
-                validMetrics.map(m => m.revenue)
-            );
-            
-            // Base confidence on data points and consistency
-            const dataConfidence = Math.min(1, dataPoints / 12); // Full confidence at 12 months
-            const consistencyConfidence = isFinite(consistency) ? consistency : 0.5;
-            
-            const confidence = (dataConfidence * 0.6 + consistencyConfidence * 0.4);
-            return isFinite(confidence) ? confidence : 0;
-        } catch (error) {
-            console.error('Error in calculateLTVConfidence:', error);
-            return 0;
-        }
-    }
-    
-    /**
-     * Calculate data consistency (inverse of coefficient of variation)
-     */
-    static calculateDataConsistency(data) {
-        try {
-            const validData = data.filter(d => 
-                typeof d === 'number' && isFinite(d) && d > 0
-            );
-            
-            if (validData.length < 2) return 0.5;
-            
-            const mean = stats.mean(validData);
-            if (mean === 0) return 0;
-            
-            const stdDev = stats.standardDeviation(validData);
-            const cv = stdDev / mean;
-            
-            const consistency = 1 - cv;
-            return Math.max(0, Math.min(1, isFinite(consistency) ? consistency : 0.5));
-        } catch (error) {
-            console.error('Error in calculateDataConsistency:', error);
-            return 0.5;
-        }
+            return {
+                month,
+                retention: retentionRate,
+                activeUsers,
+                churnedUsers: initialUsers - activeUsers
+            };
+        });
     }
 }
 

@@ -1,69 +1,100 @@
 // controllers/financialController.js
-const BankAccount = require('../models/bankAccountModel'); // Corrected import
-const Expense = require('../models/expenseModel');       // Corrected import
-const Revenue = require('../models/revenueModel');       // Corrected import
-const Round = require('../models/roundModel');         // To get total funds received
+const BankAccount = require('../models/bankAccountModel'); // Phase 4 updated model
+const Expense = require('../models/expenseModel');       // Phase 4 updated model
+const Revenue = require('../models/revenueModel');       // Phase 4 updated model
+const Round = require('../models/roundModel');         // Phase 4 updated model
 const mongoose = require('mongoose');
 
 // --- Bank Account Management (Module 2.1) ---
-// @desc    Add a new bank account
-// @access  Private
+// @desc    Add a new bank account for the active organization
+// @access  Private (Requires 'owner' or 'member' role)
 exports.addBankAccount = async (req, res) => {
     const { accountName, bankName, accountNumber, currentBalance, currency, notes } = req.body;
+    // --- MULTI-TENANCY: Get organization and user from request (populated by authMiddleware) ---
+    const organizationId = req.organization._id;
+    const userId = req.user._id;
+
     try {
         if (!accountName || !bankName || currentBalance === undefined) {
             return res.status(400).json({ msg: 'Account name, bank name, and current balance are required.' });
         }
+        // --- MULTI-TENANCY: Use organization's default currency if not provided ---
+        const orgCurrency = req.organization.currency || 'INR';
+
         const newAccount = new BankAccount({
-            accountName, bankName, accountNumber, currentBalance, currency, notes,
+            organization: organizationId, // Scope to organization
+            user: userId,                 // Track creator
+            accountName,
+            bankName,
+            accountNumber,
+            currentBalance,
+            currency: currency || orgCurrency, // Use provided or organization's default
+            notes,
             lastBalanceUpdate: Date.now()
         });
         const account = await newAccount.save();
         res.status(201).json(account);
     } catch (err) {
-        console.error('Error adding bank account:', err.message);
+        console.error('Error adding bank account:', err.message, err.stack);
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({ msg: err.message });
+        }
+        if (err.code === 11000) {
+             return res.status(400).json({ msg: 'A bank account with this name might already exist for your organization.' });
+        }
         res.status(500).send('Server Error: Could not add bank account.');
     }
 };
 
-// @desc    Get all bank accounts
+// @desc    Get all bank accounts for the active organization
 // @access  Private
 exports.getBankAccounts = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
-        const accounts = await BankAccount.find().sort({ accountName: 1 });
+        // --- MULTI-TENANCY: Filter by organizationId ---
+        const accounts = await BankAccount.find({ organization: organizationId }).sort({ accountName: 1 });
         res.json(accounts);
     } catch (err) {
-        console.error('Error fetching bank accounts:', err.message);
+        console.error('Error fetching bank accounts:', err.message, err.stack);
         res.status(500).send('Server Error: Could not fetch bank accounts.');
     }
 };
 
-// @desc    Get a single bank account by ID
+// @desc    Get a single bank account by ID for the active organization
 // @access  Private
 exports.getBankAccountById = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ msg: 'Invalid Bank Account ID format' });
         }
-        const account = await BankAccount.findById(req.params.id);
-        if (!account) return res.status(404).json({ msg: 'Bank account not found' });
+        // --- MULTI-TENANCY: Filter by _id AND organizationId ---
+        const account = await BankAccount.findOne({ _id: req.params.id, organization: organizationId });
+        if (!account) return res.status(404).json({ msg: 'Bank account not found within your organization.' });
         res.json(account);
     } catch (err) {
-        console.error('Error fetching bank account by ID:', err.message);
+        console.error('Error fetching bank account by ID:', err.message, err.stack);
         res.status(500).send('Server Error: Could not fetch bank account.');
     }
 };
 
-// @desc    Update a bank account (primarily balance)
+// @desc    Update a bank account for the active organization
 // @access  Private
 exports.updateBankAccount = async (req, res) => {
     const { accountName, bankName, accountNumber, currentBalance, currency, notes } = req.body;
+    // --- MULTI-TENANCY: Get organization and user from request ---
+    const organizationId = req.organization._id;
+    // const userId = req.user._id; // If BankAccount model has an 'updatedBy' field
+
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ msg: 'Invalid Bank Account ID format' });
         }
-        let account = await BankAccount.findById(req.params.id);
-        if (!account) return res.status(404).json({ msg: 'Bank account not found' });
+        // --- MULTI-TENANCY: Find by _id AND organizationId ---
+        let account = await BankAccount.findOne({ _id: req.params.id, organization: organizationId });
+        if (!account) return res.status(404).json({ msg: 'Bank account not found within your organization.' });
 
         const updateFields = { lastBalanceUpdate: Date.now() };
         if (accountName !== undefined) updateFields.accountName = accountName;
@@ -72,62 +103,95 @@ exports.updateBankAccount = async (req, res) => {
         if (currentBalance !== undefined) updateFields.currentBalance = currentBalance;
         if (currency !== undefined) updateFields.currency = currency;
         if (notes !== undefined) updateFields.notes = notes;
+        // if (userId) updateFields.updatedBy = userId; // If model supports
 
-        account = await BankAccount.findByIdAndUpdate(req.params.id, { $set: updateFields }, { new: true });
+        // findOneAndUpdate will ensure the organizationId match in the filter
+        account = await BankAccount.findOneAndUpdate(
+            { _id: req.params.id, organization: organizationId },
+            { $set: updateFields },
+            { new: true, runValidators: true }
+        );
         res.json(account);
     } catch (err) {
-        console.error('Error updating bank account:', err.message);
+        console.error('Error updating bank account:', err.message, err.stack);
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({ msg: err.message });
+        }
+         if (err.code === 11000) { // Handle unique index violation (e.g., org + accountName)
+             return res.status(400).json({ msg: 'A bank account with this name might already exist for your organization.' });
+        }
         res.status(500).send('Server Error: Could not update bank account.');
     }
 };
 
-// @desc    Delete a bank account
+// @desc    Delete a bank account for the active organization
 // @access  Private
 exports.deleteBankAccount = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ msg: 'Invalid Bank Account ID format' });
         }
-        const account = await BankAccount.findById(req.params.id);
-        if (!account) return res.status(404).json({ msg: 'Bank account not found' });
-        
-        await BankAccount.findByIdAndDelete(req.params.id);
+        // --- MULTI-TENANCY: Filter by _id AND organizationId ---
+        const account = await BankAccount.findOneAndDelete({ _id: req.params.id, organization: organizationId });
+        if (!account) return res.status(404).json({ msg: 'Bank account not found within your organization or already deleted.' });
+
         res.json({ msg: 'Bank account removed' });
     } catch (err) {
-        console.error('Error deleting bank account:', err.message);
+        console.error('Error deleting bank account:', err.message, err.stack);
         res.status(500).send('Server Error: Could not delete bank account.');
     }
 };
 
 
 // --- Expense Tracking (Module 2.2) ---
-// @desc    Add a new expense
+// @desc    Add a new expense for the active organization
 // @access  Private
 exports.addExpense = async (req, res) => {
-    const { date, amount, category, vendor, description, paymentMethod, receiptUrl, notes } = req.body;
+    const { date, amount, category, vendor, description, paymentMethod, receiptUrl, notes, currency } = req.body;
+    // --- MULTI-TENANCY: Get organization and user from request ---
+    const organizationId = req.organization._id;
+    const userId = req.user._id;
+
     try {
         if (!date || amount === undefined || !category || !description) {
             return res.status(400).json({ msg: 'Date, amount, category, and description are required for an expense.' });
         }
+        const orgCurrency = req.organization.currency || 'INR';
+
         const newExpense = new Expense({
-            date, amount, category, vendor, description, paymentMethod, receiptUrl, notes
+            organization: organizationId, // Scope to organization
+            user: userId,                 // Track creator
+            date, amount, category, vendor, description, paymentMethod, receiptUrl, notes,
+            currency: currency || orgCurrency
         });
         const expense = await newExpense.save();
         res.status(201).json(expense);
     } catch (err) {
-        console.error('Error adding expense:', err.message);
+        console.error('Error adding expense:', err.message, err.stack);
+         if (err.name === 'ValidationError') {
+            return res.status(400).json({ msg: err.message });
+        }
         res.status(500).send('Server Error: Could not add expense.');
     }
 };
 
-// @desc    Get all expenses (with filtering)
+// @desc    Get all expenses for the active organization (with filtering)
 // @access  Private
 exports.getExpenses = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
-        const { category, startDate, endDate, month, year } = req.query;
-        const query = {};
+        const { category, startDate, endDate, month, year, paymentMethod, vendor } = req.query;
+        // --- MULTI-TENANCY: Base query includes organizationId ---
+        const query = { organization: organizationId };
 
         if (category) query.category = category;
+        if (paymentMethod) query.paymentMethod = paymentMethod;
+        if (vendor) query.vendor = { $regex: vendor, $options: 'i' };
+
+
         if (startDate && endDate) {
             query.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
         } else if (startDate) {
@@ -136,51 +200,70 @@ exports.getExpenses = async (req, res) => {
             query.date = { $lte: new Date(endDate) };
         }
 
-        if (month && year) { // Filter by specific month and year
-            const firstDay = new Date(year, month - 1, 1);
-            const lastDay = new Date(year, month, 0, 23, 59, 59, 999); // Last day of the month
-            query.date = { $gte: firstDay, $lte: lastDay };
-        } else if (year) { // Filter by entire year
-            const firstDay = new Date(year, 0, 1);
-            const lastDay = new Date(year, 11, 31, 23, 59, 59, 999);
-            query.date = { $gte: firstDay, $lte: lastDay };
+        if (month && year) {
+            const parsedMonth = parseInt(month, 10);
+            const parsedYear = parseInt(year, 10);
+            if (!isNaN(parsedMonth) && !isNaN(parsedYear) && parsedMonth >= 1 && parsedMonth <= 12) {
+                const firstDay = new Date(parsedYear, parsedMonth - 1, 1);
+                const lastDay = new Date(parsedYear, parsedMonth, 0, 23, 59, 59, 999);
+                // Merge date conditions if some already exist
+                query.date = { ...(query.date || {}), $gte: firstDay, $lte: lastDay };
+            } else {
+                return res.status(400).json({ msg: "Invalid month or year for filtering."});
+            }
+        } else if (year) {
+            const parsedYear = parseInt(year, 10);
+            if (!isNaN(parsedYear)) {
+                const firstDay = new Date(parsedYear, 0, 1);
+                const lastDay = new Date(parsedYear, 11, 31, 23, 59, 59, 999);
+                query.date = { ...(query.date || {}), $gte: firstDay, $lte: lastDay };
+            } else {
+                 return res.status(400).json({ msg: "Invalid year for filtering."});
+            }
         }
-
 
         const expenses = await Expense.find(query).sort({ date: -1 });
         res.json(expenses);
     } catch (err) {
-        console.error('Error fetching expenses:', err.message);
+        console.error('Error fetching expenses:', err.message, err.stack);
         res.status(500).send('Server Error: Could not fetch expenses.');
     }
 };
 
-// @desc    Get a single expense by ID
+// @desc    Get a single expense by ID for the active organization
 // @access  Private
 exports.getExpenseById = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ msg: 'Invalid Expense ID format' });
         }
-        const expense = await Expense.findById(req.params.id);
-        if (!expense) return res.status(404).json({ msg: 'Expense not found' });
+        // --- MULTI-TENANCY: Filter by _id AND organizationId ---
+        const expense = await Expense.findOne({ _id: req.params.id, organization: organizationId });
+        if (!expense) return res.status(404).json({ msg: 'Expense not found within your organization.' });
         res.json(expense);
     } catch (err) {
-        console.error('Error fetching expense by ID:', err.message);
+        console.error('Error fetching expense by ID:', err.message, err.stack);
         res.status(500).send('Server Error: Could not fetch expense.');
     }
 };
 
-// @desc    Update an expense
+// @desc    Update an expense for the active organization
 // @access  Private
 exports.updateExpense = async (req, res) => {
-    const { date, amount, category, vendor, description, paymentMethod, receiptUrl, notes } = req.body;
+    const { date, amount, category, vendor, description, paymentMethod, receiptUrl, notes, currency } = req.body;
+    // --- MULTI-TENANCY: Get organization and user from request ---
+    const organizationId = req.organization._id;
+    // const userId = req.user._id; // If Expense model has an 'updatedBy' field
+
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ msg: 'Invalid Expense ID format' });
         }
-        let expense = await Expense.findById(req.params.id);
-        if (!expense) return res.status(404).json({ msg: 'Expense not found' });
+        // --- MULTI-TENANCY: Find by _id AND organizationId ---
+        let expense = await Expense.findOne({ _id: req.params.id, organization: organizationId });
+        if (!expense) return res.status(404).json({ msg: 'Expense not found within your organization.' });
 
         const updateFields = {};
         if (date !== undefined) updateFields.date = date;
@@ -191,111 +274,160 @@ exports.updateExpense = async (req, res) => {
         if (paymentMethod !== undefined) updateFields.paymentMethod = paymentMethod;
         if (receiptUrl !== undefined) updateFields.receiptUrl = receiptUrl;
         if (notes !== undefined) updateFields.notes = notes;
+        if (currency !== undefined) updateFields.currency = currency;
+        // if (userId) updateFields.updatedBy = userId; // If model supports
 
-        expense = await Expense.findByIdAndUpdate(req.params.id, { $set: updateFields }, { new: true });
+        expense = await Expense.findOneAndUpdate(
+            { _id: req.params.id, organization: organizationId }, // Ensure org match in filter
+            { $set: updateFields },
+            { new: true, runValidators: true }
+        );
         res.json(expense);
     } catch (err) {
-        console.error('Error updating expense:', err.message);
+        console.error('Error updating expense:', err.message, err.stack);
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({ msg: err.message });
+        }
         res.status(500).send('Server Error: Could not update expense.');
     }
 };
 
-// @desc    Delete an expense
+// @desc    Delete an expense for the active organization
 // @access  Private
 exports.deleteExpense = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ msg: 'Invalid Expense ID format' });
         }
-        const expense = await Expense.findById(req.params.id);
-        if (!expense) return res.status(404).json({ msg: 'Expense not found' });
-        
-        await Expense.findByIdAndDelete(req.params.id);
+        // --- MULTI-TENANCY: Filter by _id AND organizationId ---
+        const expense = await Expense.findOneAndDelete({ _id: req.params.id, organization: organizationId });
+        if (!expense) return res.status(404).json({ msg: 'Expense not found within your organization or already deleted.' });
+
         res.json({ msg: 'Expense removed' });
     } catch (err) {
-        console.error('Error deleting expense:', err.message);
+        console.error('Error deleting expense:', err.message, err.stack);
         res.status(500).send('Server Error: Could not delete expense.');
     }
 };
 
 // --- Revenue Tracking (Module 2.3) ---
-// @desc    Add a new revenue entry
+// @desc    Add a new revenue entry for the active organization
 // @access  Private
 exports.addRevenue = async (req, res) => {
-    const { date, amount, source, description, invoiceNumber, status, notes } = req.body;
+    const { date, amount, source, description, invoiceNumber, status, notes, currency } = req.body;
+    // --- MULTI-TENANCY: Get organization and user from request ---
+    const organizationId = req.organization._id;
+    const userId = req.user._id;
+
     try {
         if (!date || amount === undefined || !source) {
             return res.status(400).json({ msg: 'Date, amount, and source are required for revenue.' });
         }
+        const orgCurrency = req.organization.currency || 'INR';
+
         const newRevenue = new Revenue({
-            date, amount, source, description, invoiceNumber, status, notes
+            organization: organizationId, // Scope to organization
+            user: userId,                 // Track creator
+            date, amount, source, description, invoiceNumber, status, notes,
+            currency: currency || orgCurrency
         });
         const revenue = await newRevenue.save();
         res.status(201).json(revenue);
     } catch (err) {
-        console.error('Error adding revenue:', err.message);
+        console.error('Error adding revenue:', err.message, err.stack);
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({ msg: err.message });
+        }
         res.status(500).send('Server Error: Could not add revenue.');
     }
 };
 
-// @desc    Get all revenue entries
+// @desc    Get all revenue entries for the active organization
 // @access  Private
 exports.getRevenueEntries = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
-        const { source, startDate, endDate, month, year } = req.query;
-        const query = {};
-        if (source) query.source = { $regex: source, $options: 'i' }; // Case-insensitive search for source
-         if (startDate && endDate) {
+        const { source, startDate, endDate, month, year, status } = req.query;
+        // --- MULTI-TENANCY: Base query includes organizationId ---
+        const query = { organization: organizationId };
+
+        if (source) query.source = { $regex: source, $options: 'i' };
+        if (status) query.status = status;
+
+        if (startDate && endDate) {
             query.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
         } else if (startDate) {
             query.date = { $gte: new Date(startDate) };
         } else if (endDate) {
             query.date = { $lte: new Date(endDate) };
         }
-         if (month && year) {
-            const firstDay = new Date(year, month - 1, 1);
-            const lastDay = new Date(year, month, 0, 23, 59, 59, 999);
-            query.date = { $gte: firstDay, $lte: lastDay };
+
+        if (month && year) {
+             const parsedMonth = parseInt(month, 10);
+            const parsedYear = parseInt(year, 10);
+            if (!isNaN(parsedMonth) && !isNaN(parsedYear) && parsedMonth >= 1 && parsedMonth <= 12) {
+                const firstDay = new Date(parsedYear, parsedMonth - 1, 1);
+                const lastDay = new Date(parsedYear, parsedMonth, 0, 23, 59, 59, 999);
+                query.date = { ...(query.date || {}), $gte: firstDay, $lte: lastDay };
+            } else {
+                 return res.status(400).json({ msg: "Invalid month or year for filtering."});
+            }
         } else if (year) {
-            const firstDay = new Date(year, 0, 1);
-            const lastDay = new Date(year, 11, 31, 23, 59, 59, 999);
-            query.date = { $gte: firstDay, $lte: lastDay };
+             const parsedYear = parseInt(year, 10);
+            if (!isNaN(parsedYear)) {
+                const firstDay = new Date(parsedYear, 0, 1);
+                const lastDay = new Date(parsedYear, 11, 31, 23, 59, 59, 999);
+                query.date = { ...(query.date || {}), $gte: firstDay, $lte: lastDay };
+            } else {
+                return res.status(400).json({ msg: "Invalid year for filtering."});
+            }
         }
 
         const revenues = await Revenue.find(query).sort({ date: -1 });
         res.json(revenues);
     } catch (err) {
-        console.error('Error fetching revenue entries:', err.message);
+        console.error('Error fetching revenue entries:', err.message, err.stack);
         res.status(500).send('Server Error: Could not fetch revenue entries.');
     }
 };
 
-// @desc    Get a single revenue entry by ID
+// @desc    Get a single revenue entry by ID for the active organization
 // @access  Private
 exports.getRevenueEntryById = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ msg: 'Invalid Revenue ID format' });
         }
-        const revenue = await Revenue.findById(req.params.id);
-        if (!revenue) return res.status(404).json({ msg: 'Revenue entry not found' });
+        // --- MULTI-TENANCY: Filter by _id AND organizationId ---
+        const revenue = await Revenue.findOne({ _id: req.params.id, organization: organizationId });
+        if (!revenue) return res.status(404).json({ msg: 'Revenue entry not found within your organization.' });
         res.json(revenue);
     } catch (err) {
-        console.error('Error fetching revenue entry by ID:', err.message);
+        console.error('Error fetching revenue entry by ID:', err.message, err.stack);
         res.status(500).send('Server Error: Could not fetch revenue entry.');
     }
 };
 
-// @desc    Update a revenue entry
+// @desc    Update a revenue entry for the active organization
 // @access  Private
 exports.updateRevenueEntry = async (req, res) => {
-    const { date, amount, source, description, invoiceNumber, status, notes } = req.body;
+    const { date, amount, source, description, invoiceNumber, status, notes, currency } = req.body;
+    // --- MULTI-TENANCY: Get organization and user from request ---
+    const organizationId = req.organization._id;
+    // const userId = req.user._id; // If Revenue model has an 'updatedBy' field
+
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ msg: 'Invalid Revenue ID format' });
         }
-        let revenue = await Revenue.findById(req.params.id);
-        if (!revenue) return res.status(404).json({ msg: 'Revenue entry not found' });
+        // --- MULTI-TENANCY: Find by _id AND organizationId ---
+        let revenue = await Revenue.findOne({ _id: req.params.id, organization: organizationId });
+        if (!revenue) return res.status(404).json({ msg: 'Revenue entry not found within your organization.' });
 
         const updateFields = {};
         if (date !== undefined) updateFields.date = date;
@@ -305,193 +437,166 @@ exports.updateRevenueEntry = async (req, res) => {
         if (invoiceNumber !== undefined) updateFields.invoiceNumber = invoiceNumber;
         if (status !== undefined) updateFields.status = status;
         if (notes !== undefined) updateFields.notes = notes;
+        if (currency !== undefined) updateFields.currency = currency;
+        // if (userId) updateFields.updatedBy = userId; // If model supports
 
-        revenue = await Revenue.findByIdAndUpdate(req.params.id, { $set: updateFields }, { new: true });
+        revenue = await Revenue.findOneAndUpdate(
+            { _id: req.params.id, organization: organizationId }, // Ensure org match in filter
+            { $set: updateFields },
+            { new: true, runValidators: true }
+        );
         res.json(revenue);
     } catch (err) {
-        console.error('Error updating revenue entry:', err.message);
+        console.error('Error updating revenue entry:', err.message, err.stack);
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({ msg: err.message });
+        }
         res.status(500).send('Server Error: Could not update revenue entry.');
     }
 };
 
-// @desc    Delete a revenue entry
+// @desc    Delete a revenue entry for the active organization
 // @access  Private
 exports.deleteRevenueEntry = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ msg: 'Invalid Revenue ID format' });
         }
-        const revenue = await Revenue.findById(req.params.id);
-        if (!revenue) return res.status(404).json({ msg: 'Revenue entry not found' });
+        // --- MULTI-TENANCY: Filter by _id AND organizationId ---
+        const revenue = await Revenue.findOneAndDelete({ _id: req.params.id, organization: organizationId });
+        if (!revenue) return res.status(404).json({ msg: 'Revenue entry not found within your organization or already deleted.' });
 
-        await Revenue.findByIdAndDelete(req.params.id);
         res.json({ msg: 'Revenue entry removed' });
     } catch (err) {
-        console.error('Error deleting revenue entry:', err.message);
+        console.error('Error deleting revenue entry:', err.message, err.stack);
         res.status(500).send('Server Error: Could not delete revenue entry.');
     }
 };
 
 // --- Fund Utilization & Overview (Module 2.1 & 2.4) ---
-// @desc    Get financial overview
+// @desc    Get financial overview for the active organization
 // @access  Private
 exports.getFinancialOverview = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
+    const orgCurrency = req.organization.currency || 'INR';
+
     try {
-        // Get bank account balances
-        const bankAccounts = await BankAccount.find();
+        // --- MULTI-TENANCY: Filter all queries by organizationId ---
+        const bankAccounts = await BankAccount.find({ organization: organizationId });
         const totalBankBalance = bankAccounts.reduce((sum, acc) => sum + acc.currentBalance, 0);
 
-        // Get total funds received from rounds
-        const rounds = await Round.find();
+        const rounds = await Round.find({ organization: organizationId });
         const totalFundsReceivedFromRounds = rounds.reduce((sum, r) => sum + r.totalFundsReceived, 0);
-        
-        // Define time periods for calculations
-        const threeMonthsAgo = new Date();
-        threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-        threeMonthsAgo.setDate(1);
-        threeMonthsAgo.setHours(0, 0, 0, 0);
 
-        // Current month date range
-        const currentMonthStart = new Date();
-        currentMonthStart.setDate(1);
-        currentMonthStart.setHours(0, 0, 0, 0);
-        
-        // Current year date range
-        const currentYearStart = new Date(new Date().getFullYear(), 0, 1);
-        
-        // Calculate Monthly Burn Rate (average of last 3 months of expenses)
-        const recentExpenses = await Expense.aggregate([
-            { $match: { date: { $gte: threeMonthsAgo } } },
-            {
-                $group: {
-                    _id: { year: { $year: "$date" }, month: { $month: "$date" } },
-                    totalMonthlyExpense: { $sum: "$amount" }
-                }
-            },
-            { $sort: { "_id.year": 1, "_id.month": 1 } }
-        ]);
-        
-        // Calculate recent revenue (last 3 months)
-        const recentRevenue = await Revenue.aggregate([
-            { $match: { date: { $gte: threeMonthsAgo } } },
-            {
-                $group: {
-                    _id: { year: { $year: "$date" }, month: { $month: "$date" } },
-                    totalMonthlyRevenue: { $sum: "$amount" }
-                }
-            },
+        const today = new Date();
+        const threeMonthsAgo = new Date(new Date().setMonth(today.getMonth() - 3));
+        threeMonthsAgo.setDate(1); threeMonthsAgo.setHours(0,0,0,0);
+        const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        const currentYearStart = new Date(today.getFullYear(), 0, 1);
+
+        const recentExpensesAgg = await Expense.aggregate([
+            { $match: { organization: organizationId, date: { $gte: threeMonthsAgo, $lt: currentMonthStart } } },
+            { $group: {
+                _id: { year: { $year: "$date" }, month: { $month: "$date" } },
+                totalMonthlyExpense: { $sum: "$amount" }
+            }},
             { $sort: { "_id.year": 1, "_id.month": 1 } }
         ]);
 
-        // Get monthly and yearly totals
-        const currentMonthExpenses = await Expense.aggregate([
-            { $match: { date: { $gte: currentMonthStart } } },
-            { $group: { _id: null, total: { $sum: "$amount" } } }
+        const recentRevenueAgg = await Revenue.aggregate([
+            { $match: { organization: organizationId, date: { $gte: threeMonthsAgo, $lt: currentMonthStart } } },
+            { $group: {
+                _id: { year: { $year: "$date" }, month: { $month: "$date" } },
+                totalMonthlyRevenue: { $sum: "$amount" }
+            }},
+            { $sort: { "_id.year": 1, "_id.month": 1 } }
         ]);
-        
-        const currentMonthRevenue = await Revenue.aggregate([
-            { $match: { date: { $gte: currentMonthStart } } },
-            { $group: { _id: null, total: { $sum: "$amount" } } }
-        ]);
-        
-        const currentYearExpenses = await Expense.aggregate([
-            { $match: { date: { $gte: currentYearStart } } },
-            { $group: { _id: null, total: { $sum: "$amount" } } }
-        ]);
-        
-        const currentYearRevenue = await Revenue.aggregate([
-            { $match: { date: { $gte: currentYearStart } } },
-            { $group: { _id: null, total: { $sum: "$amount" } } }
-        ]);
-        
-        // Get the latest expenses and revenue (most recent 10 of each)
-        const latestExpenses = await Expense.find()
-            .sort({ date: -1 })
-            .limit(10)
-            .select('date amount category description');
-            
-        const latestRevenue = await Revenue.find()
-            .sort({ date: -1 })
-            .limit(10)
-            .select('date amount source description');
 
-        // Calculate totals and averages
         let averageMonthlyBurnRate = 0;
-        if (recentExpenses.length > 0) {
-            const totalBurnOverPeriod = recentExpenses.reduce((sum, month) => sum + month.totalMonthlyExpense, 0);
-            averageMonthlyBurnRate = totalBurnOverPeriod / recentExpenses.length;
+        if (recentExpensesAgg.length > 0) {
+            const totalBurnOverPeriod = recentExpensesAgg.reduce((sum, month) => sum + month.totalMonthlyExpense, 0);
+            averageMonthlyBurnRate = totalBurnOverPeriod / recentExpensesAgg.length;
+        }
+
+        let averageMonthlyRevenue = 0;
+        if (recentRevenueAgg.length > 0) {
+            const totalRevenueOverPeriod = recentRevenueAgg.reduce((sum, month) => sum + month.totalMonthlyRevenue, 0);
+            averageMonthlyRevenue = totalRevenueOverPeriod / recentRevenueAgg.length;
         }
         
-        let averageMonthlyRevenue = 0;
-        if (recentRevenue.length > 0) {
-            const totalRevenueOverPeriod = recentRevenue.reduce((sum, month) => sum + month.totalMonthlyRevenue, 0);
-            averageMonthlyRevenue = totalRevenueOverPeriod / recentRevenue.length;
-        }
+        const netMonthlyCashFlow = averageMonthlyRevenue - averageMonthlyBurnRate;
+        const estimatedRunwayMonths = averageMonthlyBurnRate > 0 && totalBankBalance > 0
+            ? (totalBankBalance / averageMonthlyBurnRate)
+            : (averageMonthlyBurnRate <=0 && totalBankBalance >=0 ? "Infinite" : 0);
 
-        // Calculate net income, net burn, and runway
-        const netMonthlyIncome = averageMonthlyRevenue - averageMonthlyBurnRate;
-        const estimatedRunwayMonths = averageMonthlyBurnRate > 0 
-            ? (totalBankBalance / averageMonthlyBurnRate) 
-            : "Infinite";
+        const mtdExpenses = await Expense.aggregate([
+            { $match: { organization: organizationId, date: { $gte: currentMonthStart } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        const mtdRevenue = await Revenue.aggregate([
+            { $match: { organization: organizationId, date: { $gte: currentMonthStart } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
 
-        // Prepare the response
+        const ytdExpenses = await Expense.aggregate([
+            { $match: { organization: organizationId, date: { $gte: currentYearStart } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        const ytdRevenue = await Revenue.aggregate([
+            { $match: { organization: organizationId, date: { $gte: currentYearStart } } },
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+
+        const latestExpenses = await Expense.find({ organization: organizationId })
+            .sort({ date: -1 }).limit(10).select('date amount category description currency');
+        const latestRevenue = await Revenue.find({ organization: organizationId })
+            .sort({ date: -1 }).limit(10).select('date amount source description currency');
+
         res.json({
-            // Original data
+            currency: orgCurrency,
             totalFundsReceivedFromRounds,
             currentTotalBankBalance: totalBankBalance,
-            averageMonthlyBurnRate: averageMonthlyBurnRate.toFixed(2),
-            estimatedRunwayMonths: isFinite(estimatedRunwayMonths) ? estimatedRunwayMonths.toFixed(1) : "N/A (No Burn or No Funds)",
-            
-            // New data - monthly metrics
-            averageMonthlyRevenue: averageMonthlyRevenue.toFixed(2),
-            netMonthlyIncome: netMonthlyIncome.toFixed(2),
-            
-            // Current month data
-            currentMonth: {
-                expenses: currentMonthExpenses[0]?.total || 0,
-                revenue: currentMonthRevenue[0]?.total || 0,
-                netIncome: (currentMonthRevenue[0]?.total || 0) - (currentMonthExpenses[0]?.total || 0)
+            averageMonthlyBurnRate: parseFloat(averageMonthlyBurnRate.toFixed(2)),
+            averageMonthlyRevenue: parseFloat(averageMonthlyRevenue.toFixed(2)),
+            netMonthlyCashFlow: parseFloat(netMonthlyCashFlow.toFixed(2)),
+            estimatedRunwayMonths: (typeof estimatedRunwayMonths === 'string') ? estimatedRunwayMonths : parseFloat(estimatedRunwayMonths.toFixed(1)),
+            currentMonthToDate: {
+                expenses: mtdExpenses[0]?.total || 0,
+                revenue: mtdRevenue[0]?.total || 0,
+                netCashFlow: (mtdRevenue[0]?.total || 0) - (mtdExpenses[0]?.total || 0)
             },
-            
-            // Current year data
-            currentYear: {
-                expenses: currentYearExpenses[0]?.total || 0,
-                revenue: currentYearRevenue[0]?.total || 0,
-                netIncome: (currentYearRevenue[0]?.total || 0) - (currentYearExpenses[0]?.total || 0)
+            currentYearToDate: {
+                expenses: ytdExpenses[0]?.total || 0,
+                revenue: ytdRevenue[0]?.total || 0,
+                netCashFlow: (ytdRevenue[0]?.total || 0) - (ytdExpenses[0]?.total || 0)
             },
-            
-            // Recent transactions
             latestTransactions: {
                 expenses: latestExpenses,
                 revenue: latestRevenue
             },
-            
-            // Historical data by month (for charts)
-            historicalData: {
-                expenses: recentExpenses.map(month => ({
-                    year: month._id.year,
-                    month: month._id.month,
-                    amount: month.totalMonthlyExpense
-                })),
-                revenue: recentRevenue.map(month => ({
-                    year: month._id.year,
-                    month: month._id.month, 
-                    amount: month.totalMonthlyRevenue
-                }))
+            historicalMonthlyData: {
+                expenses: recentExpensesAgg.map(m => ({ year: m._id.year, month: m._id.month, amount: m.totalMonthlyExpense })),
+                revenue: recentRevenueAgg.map(m => ({ year: m._id.year, month: m._id.month, amount: m.totalMonthlyRevenue }))
             }
         });
     } catch (err) {
-        console.error('Error fetching financial overview:', err.message);
+        console.error('Error fetching financial overview:', err.message, err.stack);
         res.status(500).send('Server Error: Could not fetch financial overview.');
     }
 };
 
-// @desc    Get fund utilization report (expenses by category)
+// @desc    Get fund utilization report (expenses by category) for the active organization
 // @access  Private
 exports.getFundUtilizationReport = async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
         const { startDate, endDate, month, year } = req.query;
-        const matchStage = {};
+        // --- MULTI-TENANCY: Base filter includes organizationId ---
+        const matchStage = { organization: organizationId };
 
         if (startDate && endDate) {
             matchStage.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
@@ -502,24 +607,33 @@ exports.getFundUtilizationReport = async (req, res) => {
         }
 
         if (month && year) {
-            const firstDay = new Date(year, month - 1, 1);
-            const lastDay = new Date(year, month, 0, 23, 59, 59, 999);
-            matchStage.date = { $gte: firstDay, $lte: lastDay };
+            const parsedMonth = parseInt(month, 10);
+            const parsedYear = parseInt(year, 10);
+             if (!isNaN(parsedMonth) && !isNaN(parsedYear) && parsedMonth >= 1 && parsedMonth <= 12) {
+                const firstDay = new Date(parsedYear, parsedMonth - 1, 1);
+                const lastDay = new Date(parsedYear, parsedMonth, 0, 23, 59, 59, 999);
+                matchStage.date = { ...(matchStage.date || {}), $gte: firstDay, $lte: lastDay }; // Merge date conditions
+            } else {
+                return res.status(400).json({ msg: "Invalid month or year for filtering."});
+            }
         } else if (year) {
-            const firstDay = new Date(year, 0, 1);
-            const lastDay = new Date(year, 11, 31, 23, 59, 59, 999);
-            matchStage.date = { $gte: firstDay, $lte: lastDay };
+             const parsedYear = parseInt(year, 10);
+            if (!isNaN(parsedYear)) {
+                const firstDay = new Date(parsedYear, 0, 1);
+                const lastDay = new Date(parsedYear, 11, 31, 23, 59, 59, 999);
+                matchStage.date = { ...(matchStage.date || {}), $gte: firstDay, $lte: lastDay }; // Merge date conditions
+            } else {
+                return res.status(400).json({ msg: "Invalid year for filtering."});
+            }
         }
-        // If no date filter, it aggregates all expenses
 
         const utilization = await Expense.aggregate([
             { $match: matchStage },
-            {
-                $group: {
-                    _id: "$category",
-                    totalSpent: { $sum: "$amount" }
-                }
-            },
+            { $group: {
+                _id: "$category",
+                totalSpent: { $sum: "$amount" },
+                count: { $sum: 1 }
+            }},
             { $sort: { totalSpent: -1 } }
         ]);
 
@@ -528,15 +642,20 @@ exports.getFundUtilizationReport = async (req, res) => {
         const utilizationWithPercentage = utilization.map(cat => ({
             category: cat._id,
             totalSpent: cat.totalSpent,
-            percentage: totalExpensesInPeriod > 0 ? ((cat.totalSpent / totalExpensesInPeriod) * 100).toFixed(2) : "0.00"
+            transactionCount: cat.count,
+            percentage: totalExpensesInPeriod > 0 ? parseFloat(((cat.totalSpent / totalExpensesInPeriod) * 100).toFixed(2)) : 0
         }));
 
         res.json({
             periodExpenses: utilizationWithPercentage,
-            totalExpensesInPeriod
+            totalExpensesInPeriod,
+            currency: req.organization.currency || 'INR'
         });
     } catch (err) {
-        console.error('Error fetching fund utilization report:', err.message);
+        console.error('Error fetching fund utilization report:', err.message, err.stack);
         res.status(500).send('Server Error: Could not fetch fund utilization report.');
     }
 };
+
+// (Make sure all other financial controller methods like Budget, P&L, Balance Sheet, Cash Flow Statement
+// are also updated similarly to scope by organizationId and use req.user._id for createdBy/user fields)

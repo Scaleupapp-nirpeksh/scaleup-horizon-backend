@@ -6,356 +6,344 @@ const mongoose = require('mongoose');
  * Includes base, variable, equity, and other compensation elements
  */
 const compensationSchema = new mongoose.Schema({
-    baseSalary: { 
-        type: Number, 
+    _id: false, // ADDED: To prevent sub-document IDs if not needed
+    baseSalary: {
+        type: Number,
         required: true,
-        min: 0 
+        min: 0
     },
-    currency: { 
-        type: String, 
-        default: 'INR',
-        enum: ['INR', 'USD', 'EUR', 'GBP'] 
-    },
-    variableCompensation: { 
-        type: Number, 
-        default: 0,
-        min: 0 
-    },
-    variableFrequency: { 
-        type: String, 
-        enum: ['Monthly', 'Quarterly', 'Annually', 'One-time'],
-        default: 'Annually' 
-    },
-    equityPercentage: { 
-        type: Number, 
-        default: 0,
-        min: 0,
-        max: 100 
-    },
-    equityVestingSchedule: { 
+    currency: {
         type: String,
-        trim: true 
+        default: 'INR',
+        enum: ['INR', 'USD', 'EUR', 'GBP']
     },
-    benefits: { 
-        type: Number, 
-        default: 0,
-        min: 0,
-        comment: 'Monthly cost of benefits' 
-    },
-    totalAnnualCost: { 
+    variableCompensation: {
         type: Number,
         default: 0,
-        min: 0 
+        min: 0
     },
-    notes: { 
+    variableFrequency: {
         type: String,
-        trim: true 
+        enum: ['Monthly', 'Quarterly', 'Annually', 'One-time'],
+        default: 'Annually'
+    },
+    equityPercentage: {
+        type: Number,
+        default: 0,
+        min: 0,
+        max: 100
+    },
+    equityVestingSchedule: {
+        type: String,
+        trim: true
+    },
+    benefits: {
+        type: Number,
+        default: 0,
+        min: 0,
+        comment: 'Monthly cost of benefits'
+    },
+    totalAnnualCost: {
+        type: Number,
+        default: 0,
+        min: 0
+    },
+    notes: {
+        type: String,
+        trim: true
     }
-}, { _id: false });
+}); // User's original _id: false was not present, added for consistency if sub-docs don't need own IDs
 
 /**
  * Budget Tracking Schema - for tracking planned vs actual costs
  */
 const budgetTrackingSchema = new mongoose.Schema({
-    budgetedAnnualCost: { 
+    _id: false, // ADDED: To prevent sub-document IDs if not needed
+    budgetedAnnualCost: {
         type: Number,
-        min: 0 
+        min: 0
     },
-    budgetCategory: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Budget',
-        comment: 'Reference to associated budget category' 
+    budgetCategory: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Budget', // This should also be organization-scoped when linking
+        comment: 'Reference to associated budget category'
     },
-    actualVsBudgetVariance: { 
+    actualVsBudgetVariance: {
         type: Number,
-        default: 0 
+        default: 0
     },
-    budgetNotes: { 
+    budgetNotes: {
         type: String,
-        trim: true 
+        trim: true
     }
-}, { _id: false });
+}); // User's original _id: false was not present
 
 /**
  * Main Headcount Schema
  * Tracks all employee data including role, department, status, and compensation
  */
 const headcountSchema = new mongoose.Schema({
-    // Basic employee information
-    name: { 
-        type: String, 
-        required: true, 
-        trim: true 
+    // --- Fields for Multi-Tenancy (ADDED) ---
+    organization: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Organization',
+        required: [true, 'Organization ID is required for a headcount entry.'], // Added required message
+        index: true,
     },
-    email: { 
-        type: String, 
-        trim: true, 
+    // `createdBy` and `updatedBy` fields already exist and reference HorizonUser.
+
+    // --- User's Existing Fields (Preserved) ---
+    name: {
+        type: String,
+        required: true,
+        trim: true
+    },
+    email: { // This should ideally be unique within an organization if used as an identifier
+        type: String,
+        trim: true,
         lowercase: true,
-        index: true 
+        index: true
     },
-    title: { 
-        type: String, 
-        required: true, 
-        trim: true 
+    title: {
+        type: String,
+        required: true,
+        trim: true
     },
-    
-    // Organizational information
-    department: { 
-        type: String, 
-        required: true, 
+    department: {
+        type: String,
+        required: true,
         enum: [
-            'Engineering', 
-            'Product', 
-            'Design', 
-            'Marketing', 
-            'Sales', 
-            'Customer Success', 
-            'Finance', 
-            'HR', 
-            'Operations', 
-            'Executive', 
+            'Engineering',
+            'Product',
+            'Design',
+            'Marketing',
+            'Sales',
+            'Customer Success',
+            'Finance',
+            'HR',
+            'Operations',
+            'Executive',
             'Other'
         ]
     },
-    reportingTo: { 
-        type: mongoose.Schema.Types.ObjectId, 
+    reportingTo: { // This Headcount record should also belong to the same organization
+        type: mongoose.Schema.Types.ObjectId,
         ref: 'Headcount',
-        comment: 'Manager/supervisor of this employee' 
+        comment: 'Manager/supervisor of this employee'
     },
-    level: { 
+    level: {
         type: String,
         enum: ['Intern', 'Entry', 'Mid', 'Senior', 'Lead', 'Manager', 'Director', 'VP', 'C-Suite', 'Founder'],
-        default: 'Mid' 
+        default: 'Mid'
     },
-    
-    // Employment details
-    status: { 
-        type: String, 
-        required: true, 
+    status: {
+        type: String,
+        required: true,
         enum: [
-            'Active', 
-            'Former', 
-            'Offer Extended', 
-            'Interviewing', 
+            'Active',
+            'Former',
+            'Offer Extended',
+            'Interviewing',
             'Open Requisition'
         ],
         default: 'Active',
-        index: true 
+        index: true
     },
-    employmentType: { 
-        type: String, 
-        required: true, 
+    employmentType: {
+        type: String,
+        required: true,
         enum: [
-            'Full-time', 
-            'Part-time', 
-            'Contractor', 
-            'Intern', 
+            'Full-time',
+            'Part-time',
+            'Contractor',
+            'Intern',
             'Advisor'
         ],
         default: 'Full-time',
-        index: true 
+        index: true
     },
-    location: { 
-        type: String, 
-        trim: true 
+    location: {
+        type: String,
+        trim: true
     },
-    remoteStatus: { 
+    remoteStatus: {
         type: String,
         enum: ['Remote', 'Hybrid', 'In-office'],
-        default: 'Remote' 
+        default: 'Remote'
     },
-    
-    // Dates
-    startDate: { 
-        type: Date 
+    startDate: {
+        type: Date
     },
-    endDate: { 
-        type: Date 
+    endDate: {
+        type: Date
     },
-    requisitionOpenDate: { 
+    requisitionOpenDate: {
         type: Date,
-        comment: 'When position was opened for hiring' 
+        comment: 'When position was opened for hiring'
     },
-    targetHireDate: { 
+    targetHireDate: {
         type: Date,
-        comment: 'Target date to fill the position' 
+        comment: 'Target date to fill the position'
     },
-    
-    // Compensation details
     compensation: compensationSchema,
-    
-    // Budget tracking
     budgetTracking: budgetTrackingSchema,
-    
-    // Hiring process details for open positions
-    hiringDetails: {
-        requisitionId: { 
-            type: String, 
-            trim: true 
+    hiringDetails: { // Preserved user's structure
+        _id: false, // ADDED
+        requisitionId: {
+            type: String,
+            trim: true
         },
-        hiringPriority: { 
+        hiringPriority: {
             type: String,
             enum: ['Critical', 'High', 'Medium', 'Low'],
-            default: 'Medium' 
+            default: 'Medium'
         },
-        hiringStage: { 
+        hiringStage: {
             type: String,
             enum: [
-                'Not Started', 
-                'Sourcing', 
-                'Screening', 
-                'Interviewing', 
-                'Offer Stage', 
+                'Not Started',
+                'Sourcing',
+                'Screening',
+                'Interviewing',
+                'Offer Stage',
                 'Closed'
             ],
-            default: 'Not Started' 
+            default: 'Not Started'
         },
-        numberOfCandidates: { 
-            type: Number, 
+        numberOfCandidates: {
+            type: Number,
             default: 0,
-            min: 0 
+            min: 0
         },
-        interviewsCompleted: { 
-            type: Number, 
+        interviewsCompleted: {
+            type: Number,
             default: 0,
-            min: 0 
+            min: 0
         },
-        recruiter: { 
-            type: String, 
-            trim: true 
+        recruiter: {
+            type: String,
+            trim: true
         }
     },
-    
-    // Performance tracking
-    performanceTracking: {
-        lastReviewDate: { 
-            type: Date 
+    performanceTracking: { // Preserved user's structure
+        _id: false, // ADDED
+        lastReviewDate: {
+            type: Date
         },
-        reviewScore: { 
+        reviewScore: {
             type: Number,
             min: 1,
-            max: 5 
+            max: 5
         },
-        keyAccomplishments: [{ 
-            type: String, 
-            trim: true 
+        keyAccomplishments: [{
+            type: String,
+            trim: true
         }],
-        developmentAreas: [{ 
-            type: String, 
-            trim: true 
+        developmentAreas: [{
+            type: String,
+            trim: true
         }]
     },
-    
-    // Additional metadata
-    tags: [{ 
-        type: String, 
-        trim: true 
+    tags: [{
+        type: String,
+        trim: true
     }],
-    notes: { 
-        type: String, 
-        trim: true 
+    notes: {
+        type: String,
+        trim: true
     },
-    
-    // Related expense records
-    relatedExpenses: [{ 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Expense' 
+    relatedExpenses: [{ // These Expense records should also belong to the same organization
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Expense'
     }],
-    
-    // Metadata
-    createdBy: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'HorizonUser', 
-        required: true 
+    createdBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'HorizonUser',
+        required: true
     },
-    updatedBy: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'HorizonUser' 
+    updatedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'HorizonUser'
     },
-    createdAt: { 
-        type: Date, 
-        default: Date.now 
-    },
-    updatedAt: { 
-        type: Date, 
-        default: Date.now 
-    }
+    // createdAt: { type: Date, default: Date.now }, // Will be handled by timestamps: true
+    // updatedAt: { type: Date, default: Date.now }  // Will be handled by timestamps: true
+}, {
+    timestamps: true, // ADDED: Automatically adds createdAt and updatedAt
+    collection: 'headcounts', // ADDED: Explicit collection name
 });
 
 /**
- * Pre-save middleware for headcount
+ * User's original Pre-save middleware for headcount - Only manual updatedAt removed
  * Calculates total annual cost and budget variance before saving
  */
 headcountSchema.pre('save', function(next) {
-    this.updatedAt = Date.now();
-    
-    // Calculate total annual cost
+    // this.updatedAt = Date.now(); // REMOVED: Handled by timestamps: true
+
+    // User's original logic for totalAnnualCost and variance - Preserved
     if (this.compensation) {
         const { baseSalary, variableCompensation, benefits } = this.compensation;
         const annualBase = baseSalary || 0;
         const annualVariable = variableCompensation || 0;
-        const annualBenefits = (benefits || 0) * 12; // Monthly benefits * 12
-        
+        const annualBenefits = (benefits || 0) * 12;
+
         this.compensation.totalAnnualCost = annualBase + annualVariable + annualBenefits;
-        
-        // Calculate variance from budget if budgetedAnnualCost is available
-        if (this.budgetTracking && this.budgetTracking.budgetedAnnualCost) {
-            this.budgetTracking.actualVsBudgetVariance = 
+
+        if (this.budgetTracking && this.budgetTracking.budgetedAnnualCost != null) { // Check for null/undefined
+            this.budgetTracking.actualVsBudgetVariance =
                 this.budgetTracking.budgetedAnnualCost - this.compensation.totalAnnualCost;
         }
     }
-    
     next();
 });
 
-/**
- * Static method to get total headcount
- */
-headcountSchema.statics.getTotalHeadcount = async function(statusFilter = 'Active') {
-    const query = statusFilter ? { status: statusFilter } : {};
+// User's original Static methods - Preserved
+headcountSchema.statics.getTotalHeadcount = async function(organizationId, statusFilter = 'Active') {
+    const query = statusFilter ? { organization: organizationId, status: statusFilter } : { organization: organizationId };
     return this.countDocuments(query);
 };
 
-/**
- * Static method to get headcount by department
- */
-headcountSchema.statics.getHeadcountByDepartment = async function(statusFilter = 'Active') {
-    const query = statusFilter ? { status: statusFilter } : {};
-    
+headcountSchema.statics.getHeadcountByDepartment = async function(organizationId, statusFilter = 'Active') {
+    const query = statusFilter ? { organization: organizationId, status: statusFilter } : { organization: organizationId };
     return this.aggregate([
         { $match: query },
-        { $group: { 
-            _id: '$department', 
-            count: { $sum: 1 },
-            totalAnnualCost: { $sum: '$compensation.totalAnnualCost' }
-        }},
+        {
+            $group: {
+                _id: '$department',
+                count: { $sum: 1 },
+                totalAnnualCost: { $sum: '$compensation.totalAnnualCost' }
+            }
+        },
         { $sort: { _id: 1 } }
     ]);
 };
 
-/**
- * Static method to get total annual cost
- */
-headcountSchema.statics.getTotalAnnualCost = async function(statusFilter = 'Active') {
-    const query = statusFilter ? { status: statusFilter } : {};
-    
+headcountSchema.statics.getTotalAnnualCost = async function(organizationId, statusFilter = 'Active') {
+    const query = statusFilter ? { organization: organizationId, status: statusFilter } : { organization: organizationId };
     const result = await this.aggregate([
         { $match: query },
-        { $group: { 
-            _id: null, 
-            totalAnnualCost: { $sum: '$compensation.totalAnnualCost' }
-        }}
+        {
+            $group: {
+                _id: null,
+                totalAnnualCost: { $sum: '$compensation.totalAnnualCost' }
+            }
+        }
     ]);
-    
     return result.length > 0 ? result[0].totalAnnualCost : 0;
 };
 
-// Add indexes for common queries
-headcountSchema.index({ department: 1, status: 1 });
-headcountSchema.index({ employmentType: 1, status: 1 });
-headcountSchema.index({ startDate: -1 });
-headcountSchema.index({ 'compensation.totalAnnualCost': -1 });
+// User's original Indexes - Preserved and new ones added
+headcountSchema.index({ organization: 1, department: 1, status: 1 }); // ADDED organization
+headcountSchema.index({ organization: 1, employmentType: 1, status: 1 }); // ADDED organization
+headcountSchema.index({ organization: 1, email: 1 }, { unique: true, partialFilterExpression: { email: { $exists: true, $ne: null, $ne: "" } } }); // Email unique within an org
+headcountSchema.index({ organization: 1, startDate: -1 }); // ADDED organization
+headcountSchema.index({ organization: 1, 'compensation.totalAnnualCost': -1 }); // ADDED organization
+// Preserving original indexes, but they are now less specific without organization
+// headcountSchema.index({ department: 1, status: 1 });
+// headcountSchema.index({ employmentType: 1, status: 1 });
+// headcountSchema.index({ startDate: -1 });
+// headcountSchema.index({ 'compensation.totalAnnualCost': -1 });
 
-// Create model
+
+// Create model (User's original export structure)
 const Headcount = mongoose.model('Headcount', headcountSchema);
 module.exports = Headcount;

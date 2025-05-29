@@ -1,33 +1,43 @@
 // routes/productMilestoneRoutes.js
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
-const productMilestoneController = require('../controllers/productMilestoneController');
+// --- MULTI-TENANCY: Import all necessary middleware ---
+const {
+    protect,
+    requireActiveOrganization,
+    authorizeOrganizationRole
+} = require('../middleware/authMiddleware'); // Ensure path is correct
+const productMilestoneController = require('../controllers/productMilestoneController'); // Ensure this points to the multi-tenancy updated controller
 
-// Apply authentication to all routes
-router.use(protect);
+// --- MULTI-TENANCY: Apply global protection and require an active organization for all routes in this file ---
+router.use(protect); // Ensures user is authenticated (already present)
+router.use(requireActiveOrganization); // Ensures user has an active organization context
 
-// Test route
-router.get('/test', (req, res) => {
-  res.json({ message: 'Product milestone routes working' });
+// Test route - also protected and org-scoped now
+router.get('/test', authorizeOrganizationRole(['owner', 'member']), (req, res) => {
+  res.json({ message: `Product milestone routes working for organization: ${req.organization.name}` });
 });
 
 // GET routes
-router.get('/', productMilestoneController.getMilestones);
-router.get('/investor-roadmap', productMilestoneController.getInvestorRoadmap);
-router.get('/statistics', productMilestoneController.getMilestoneStatistics);
-router.get('/:id', productMilestoneController.getMilestoneById);
+// Assuming 'owner' and 'member' can view milestones and related data
+router.get('/', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.getMilestones);
+router.get('/investor-roadmap', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.getInvestorRoadmap);
+router.get('/statistics', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.getMilestoneStatistics);
+router.get('/:id', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.getMilestoneById);
 
 // POST routes
-router.post('/', productMilestoneController.createMilestone);
-router.post('/:id/tasks', productMilestoneController.addTask);
+// Assuming 'owner' and 'member' can create milestones and tasks
+router.post('/', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.createMilestone);
+router.post('/:id/tasks', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.addTask);
 
 // PUT routes
-router.put('/:id', productMilestoneController.updateMilestone);
-router.put('/:id/tasks/:taskId', productMilestoneController.updateTask);
+// Assuming 'owner' and 'member' can update milestones and tasks
+router.put('/:id', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.updateMilestone);
+router.put('/:id/tasks/:taskId', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.updateTask);
 
 // DELETE routes
-router.delete('/:id', productMilestoneController.deleteMilestone);
-router.delete('/:id/tasks/:taskId', productMilestoneController.deleteTask);
+// Assuming 'owner' and 'member' can delete (or adjust roles if only 'owner' should delete)
+router.delete('/:id', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.deleteMilestone);
+router.delete('/:id/tasks/:taskId', authorizeOrganizationRole(['owner', 'member']), productMilestoneController.deleteTask);
 
 module.exports = router;

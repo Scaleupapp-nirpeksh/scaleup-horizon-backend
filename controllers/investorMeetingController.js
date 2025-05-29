@@ -12,7 +12,7 @@ const Document = require('../models/documentModel');
 const RunwayScenario = require('../models/runwayScenarioModel');
 const FundraisingPrediction = require('../models/fundraisingPredictionModel');
 const Budget = require('../models/budgetModel');
-const ManualKpiSnapshot = require('../models/manualKpiSnapshotModel'); // IMPORTANT: Import this
+const ManualKpiSnapshot = require('../models/manualKpiSnapshotModel');
 
 const mongoose = require('mongoose');
 
@@ -29,10 +29,18 @@ function formatCurrency(value) {
     return `₹${value.toFixed(2)}`;
 }
 
-
 const investorMeetingController = {
-    // ... (createMeeting, getMeetings, getMeetingById, updateMeeting, deleteMeeting - remain unchanged from previous version) ...
+    /**
+     * Create a new investor meeting
+     * @desc    Create investor meeting for the active organization
+     * @route   POST /api/horizon/investor-meetings
+     * @access  Private (Requires authenticated user with organization context)
+     */
     createMeeting: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             const {
                 title, meetingDate, duration, meetingType,
@@ -48,12 +56,17 @@ const investorMeetingController = {
                 });
             }
 
+            // --- MULTI-TENANCY: Process investors ensuring they belong to the organization ---
             const processedInvestors = [];
             if (investors && Array.isArray(investors)) {
                 for (const inv of investors) {
                     if (inv.investorId && mongoose.Types.ObjectId.isValid(inv.investorId)) {
                         try {
-                            const investorRecord = await Investor.findById(inv.investorId);
+                            // Verify investor belongs to this organization
+                            const investorRecord = await Investor.findOne({ 
+                                _id: inv.investorId,
+                                organization: organizationId 
+                            });
                             if (investorRecord) {
                                 processedInvestors.push({
                                     investorId: inv.investorId,
@@ -73,6 +86,8 @@ const investorMeetingController = {
             }
 
             const newMeeting = new InvestorMeeting({
+                organization: organizationId,  // Scope to organization
+                user: userId,                  // Track creator
                 title,
                 meetingDate,
                 duration: duration || 60,
@@ -86,21 +101,21 @@ const investorMeetingController = {
                 status: 'Scheduled',
                 preparation: {
                     status: 'Not Started',
-                    assignedTo: req.horizonUser.id
+                    assignedTo: userId
                 },
                 meetingSections: meetingSections || { // Default all sections to true
                     financialSnapshot: true,
                     teamUpdates: true,
                     productMilestones: true,
                     kpis: true,
-                    userMetrics: true, // NEW DEFAULT
+                    userMetrics: true,
                     runwayScenario: true,
                     fundraisingPrediction: true,
                     budgetSummary: true,
                     talkingPoints: true,
                     suggestedDocuments: true
                 },
-                createdBy: req.horizonUser.id
+                createdBy: userId              // Maintain for backward compatibility
             });
 
             const meeting = await newMeeting.save();
@@ -115,14 +130,25 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Get all investor meetings with optional filtering
+     * @desc    Get investor meetings for the active organization
+     * @route   GET /api/horizon/investor-meetings
+     * @access  Private
+     */
     getMeetings: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization from request ---
+        const organizationId = req.organization._id;
+
         try {
             const {
                 status, meetingType, investorId, fromDate, toDate, search,
                 sortBy = 'meetingDate', sortDir = 'desc', page = 1, limit = 20
             } = req.query;
 
-            const filter = { createdBy: req.horizonUser.id };
+            // --- MULTI-TENANCY: Base filter includes organizationId ---
+            const filter = { organization: organizationId };
+            
             if (status) {
                 if (status.includes(',')) {
                     filter.status = { $in: status.split(',') };
@@ -131,17 +157,20 @@ const investorMeetingController = {
                 }
             }
             if (meetingType) filter.meetingType = meetingType;
+            
             if (investorId) {
                 if (!mongoose.Types.ObjectId.isValid(investorId)) {
                     return res.status(400).json({ success: false, msg: 'Invalid investorId format' });
                 }
                 filter['investors.investorId'] = new mongoose.Types.ObjectId(investorId);
             }
+            
             if (fromDate || toDate) {
                 filter.meetingDate = {};
                 if (fromDate) filter.meetingDate.$gte = new Date(fromDate);
                 if (toDate) filter.meetingDate.$lte = new Date(toDate);
             }
+            
             if (search) {
                 filter.$or = [
                     { title: { $regex: search, $options: 'i' } },
@@ -160,6 +189,7 @@ const investorMeetingController = {
                 .limit(parseInt(limit))
                 .populate('preparation.assignedTo', 'name')
                 .populate('investors.investorId', 'name entityName')
+                .populate('user', 'name email')  // Show who created it
                 .select('-metricSnapshots -talkingPoints -feedbackItems -actionItems -financialSnapshot -teamUpdates -highlightedMilestones -highlightedKpis -linkedRunwayScenario -linkedFundraisingPrediction -budgetSummary -suggestedDocuments -userMetricsSnapshot');
 
             const total = await InvestorMeeting.countDocuments(filter);
@@ -178,27 +208,42 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Get a single investor meeting by ID
+     * @desc    Get specific investor meeting for the active organization
+     * @route   GET /api/horizon/investor-meetings/:id
+     * @access  Private
+     */
     getMeetingById: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization from request ---
+        const organizationId = req.organization._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({ success: false, msg: 'Invalid ID format' });
             }
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id })
-                .populate('investors.investorId', 'name entityName contactPerson email')
-                .populate('internalParticipants.userId', 'name email')
-                .populate('preparation.assignedTo', 'name email')
-                .populate('highlightedKpis.kpiId', 'name displayName cache.currentValue cache.trend displayFormat')
-                .populate('highlightedMilestones.milestoneId', 'name status completionPercentage investorSummary plannedEndDate')
-                .populate('relatedDocuments', 'fileName category storageUrl')
-                .populate('suggestedDocuments.documentId', 'fileName category storageUrl')
-                .populate('previousMeetingId', 'title meetingDate')
-                .populate('nextMeetingId', 'title meetingDate')
-                .populate('relatedRoundId', 'name targetAmount')
-                .populate('linkedRunwayScenario.scenarioId', 'name totalRunwayMonths dateOfCashOut')
-                .populate('linkedFundraisingPrediction.predictionId', 'predictionName targetRoundSize predictedCloseDate overallProbability');
+            
+            // --- MULTI-TENANCY: Filter by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            })
+            .populate('investors.investorId', 'name entityName contactPerson email')
+            .populate('internalParticipants.userId', 'name email')
+            .populate('preparation.assignedTo', 'name email')
+            .populate('highlightedKpis.kpiId', 'name displayName cache.currentValue cache.trend displayFormat')
+            .populate('highlightedMilestones.milestoneId', 'name status completionPercentage investorSummary plannedEndDate')
+            .populate('relatedDocuments', 'fileName category storageUrl')
+            .populate('suggestedDocuments.documentId', 'fileName category storageUrl')
+            .populate('previousMeetingId', 'title meetingDate')
+            .populate('nextMeetingId', 'title meetingDate')
+            .populate('relatedRoundId', 'name targetAmount')
+            .populate('linkedRunwayScenario.scenarioId', 'name totalRunwayMonths dateOfCashOut')
+            .populate('linkedFundraisingPrediction.predictionId', 'predictionName targetRoundSize predictedCloseDate overallProbability')
+            .populate('user', 'name email');  // Show who created it
 
             if (!meeting) {
-                return res.status(404).json({ success: false, msg: 'Investor meeting not found or not authorized' });
+                return res.status(404).json({ success: false, msg: 'Investor meeting not found within your organization' });
             }
             res.json({ success: true, data: meeting });
         } catch (err) {
@@ -207,26 +252,42 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Update a investor meeting
+     * @desc    Update investor meeting for the active organization
+     * @route   PUT /api/horizon/investor-meetings/:id
+     * @access  Private
+     */
     updateMeeting: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({ success: false, msg: 'Invalid ID format' });
             }
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
+            
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
 
             if (!meeting) {
-                return res.status(404).json({ success: false, msg: 'Investor meeting not found or not authorized' });
+                return res.status(404).json({ success: false, msg: 'Investor meeting not found within your organization' });
             }
 
-            req.body.updatedBy = req.horizonUser.id;
+            req.body.updatedBy = userId;
             req.body.updatedAt = Date.now();
 
             if (req.body.meetingSections) {
                 req.body.meetingSections = { ...meeting.meetingSections.toObject(), ...req.body.meetingSections };
             }
 
-            const updatedMeeting = await InvestorMeeting.findByIdAndUpdate(
-                req.params.id,
+            // --- MULTI-TENANCY: Ensure organization match in update ---
+            const updatedMeeting = await InvestorMeeting.findOneAndUpdate(
+                { _id: req.params.id, organization: organizationId },
                 { $set: req.body },
                 { new: true, runValidators: true }
             );
@@ -241,37 +302,67 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Delete an investor meeting
+     * @desc    Delete investor meeting for the active organization
+     * @route   DELETE /api/horizon/investor-meetings/:id
+     * @access  Private
+     */
     deleteMeeting: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization from request ---
+        const organizationId = req.organization._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({ success: false, msg: 'Invalid ID format' });
             }
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
+            
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
+            
             if (!meeting) {
-                return res.status(404).json({ success: false, msg: 'Investor meeting not found or not authorized' });
+                return res.status(404).json({ success: false, msg: 'Investor meeting not found within your organization' });
             }
-            await InvestorMeeting.findByIdAndDelete(req.params.id);
+            
+            await InvestorMeeting.findOneAndDelete({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
+            
             res.json({ success: true, data: {}, msg: 'Investor meeting removed' });
         } catch (err) {
             console.error('Error deleting investor meeting:', err.message);
             res.status(500).json({ success: false, msg: 'Server Error: Could not delete investor meeting' });
         }
     },
+
     /**
      * Prepare meeting data (populate metrics, milestones, etc.)
-     * @route POST /api/horizon/investor-meetings/:id/prepare
-     * @access Private
+     * @desc    Prepare investor meeting with organization data
+     * @route   POST /api/horizon/investor-meetings/:id/prepare
+     * @access  Private
      */
     prepareMeeting: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({ success: false, msg: 'Invalid ID format' });
             }
 
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
 
             if (!meeting) {
-                return res.status(404).json({ success: false, msg: 'Investor meeting not found or not authorized' });
+                return res.status(404).json({ success: false, msg: 'Investor meeting not found within your organization' });
             }
 
             // User can specify which sections to include in the prep
@@ -287,12 +378,15 @@ const investorMeetingController = {
 
             let previousMeeting = null;
             if (meeting.previousMeetingId) {
-                previousMeeting = await InvestorMeeting.findById(meeting.previousMeetingId);
+                previousMeeting = await InvestorMeeting.findOne({
+                    _id: meeting.previousMeetingId,
+                    organization: organizationId
+                });
             } else {
                 previousMeeting = await InvestorMeeting.findOne({
+                    organization: organizationId,
                     meetingDate: { $lt: meeting.meetingDate },
-                    status: 'Completed',
-                    createdBy: req.horizonUser.id
+                    status: 'Completed'
                 }).sort({ meetingDate: -1 });
                 if (previousMeeting) meeting.previousMeetingId = previousMeeting._id;
             }
@@ -300,25 +394,27 @@ const investorMeetingController = {
             const threeMonthsAgo = new Date();
             threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
+            // --- MULTI-TENANCY: All data queries filtered by organizationId ---
+            
             // --- Financial Snapshot ---
             if (sectionsToInclude.financialSnapshot) {
-                const bankAccounts = await BankAccount.find({ /* createdBy: req.horizonUser.id */ });
+                const bankAccounts = await BankAccount.find({ organization: organizationId });
                 const totalCash = bankAccounts.reduce((sum, acc) => sum + (acc.currentBalance || 0), 0);
 
                 const recentExpenses = await Expense.aggregate([
-                    { $match: { date: { $gte: threeMonthsAgo } /* , createdBy: req.horizonUser.id */ } },
+                    { $match: { organization: organizationId, date: { $gte: threeMonthsAgo } } },
                     { $group: { _id: { year: { $year: "$date" }, month: { $month: "$date" } }, total: { $sum: "$amount" } } }
                 ]);
                 const monthlyBurn = recentExpenses.length > 0 ? recentExpenses.reduce((sum, e) => sum + e.total, 0) / recentExpenses.length : 0;
                 const runway = monthlyBurn > 0 ? totalCash / monthlyBurn : Infinity;
 
                 const recentRevenue = await Revenue.aggregate([
-                    { $match: { date: { $gte: threeMonthsAgo } /* , createdBy: req.horizonUser.id */ } },
+                    { $match: { organization: organizationId, date: { $gte: threeMonthsAgo } } },
                     { $group: { _id: { year: { $year: "$date" }, month: { $month: "$date" } }, total: { $sum: "$amount" } } }
                 ]);
                 const monthlyRevenue = recentRevenue.length > 0 ? recentRevenue.reduce((sum, r) => sum + r.total, 0) / recentRevenue.length : 0;
 
-                const rounds = await Round.find({ /* createdBy: req.horizonUser.id */ });
+                const rounds = await Round.find({ organization: organizationId });
                 const totalFundsRaised = rounds.reduce((sum, r) => sum + (r.totalFundsReceived || 0), 0);
 
                 meeting.financialSnapshot = {
@@ -333,17 +429,23 @@ const investorMeetingController = {
 
             // --- Team Updates ---
             if (sectionsToInclude.teamUpdates) {
-                const activeEmployees = await Headcount.find({ status: 'Active' /* , createdBy: req.horizonUser.id */ });
-                const openPositions = await Headcount.countDocuments({ status: { $in: ['Open Requisition', 'Interviewing', 'Offer Extended'] } /* , createdBy: req.horizonUser.id */ });
+                const activeEmployees = await Headcount.find({ 
+                    organization: organizationId, 
+                    status: 'Active' 
+                });
+                const openPositions = await Headcount.countDocuments({ 
+                    organization: organizationId,
+                    status: { $in: ['Open Requisition', 'Interviewing', 'Offer Extended'] } 
+                });
                 const newHires = await Headcount.find({
+                    organization: organizationId,
                     status: 'Active',
                     startDate: { $gte: previousMeeting ? previousMeeting.meetingDate : threeMonthsAgo }
-                    /* , createdBy: req.horizonUser.id */
                 }).select('name title department startDate');
                 const departures = await Headcount.find({
+                    organization: organizationId,
                     status: 'Former',
                     endDate: { $gte: previousMeeting ? previousMeeting.meetingDate : threeMonthsAgo }
-                    /* , createdBy: req.horizonUser.id */
                 }).select('name title department endDate');
 
                 meeting.teamUpdates = {
@@ -357,16 +459,17 @@ const investorMeetingController = {
             // --- Product Milestones ---
             if (sectionsToInclude.productMilestones) {
                 const recentlyCompletedMilestones = await ProductMilestone.find({
+                    organization: organizationId,
                     status: 'Completed',
                     actualEndDate: { $gte: previousMeeting ? previousMeeting.meetingDate : threeMonthsAgo },
-                    visibleToInvestors: true,
-                    createdBy: req.horizonUser.id
+                    visibleToInvestors: true
                 }).select('name status completionPercentage actualEndDate investorSummary plannedEndDate');
+                
                 const upcomingMilestones = await ProductMilestone.find({
+                    organization: organizationId,
                     status: { $nin: ['Completed', 'Cancelled'] },
                     plannedEndDate: { $gte: new Date() },
-                    visibleToInvestors: true,
-                    createdBy: req.horizonUser.id
+                    visibleToInvestors: true
                 }).sort({ plannedEndDate: 1 }).limit(5)
                 .select('name status completionPercentage plannedEndDate investorSummary');
 
@@ -379,9 +482,9 @@ const investorMeetingController = {
             // --- KPIs (Custom Pinned KPIs) ---
             if (sectionsToInclude.kpis) {
                 const keyKpis = await CustomKPI.find({
+                    organization: organizationId,
                     isActive: true,
-                    isPinned: true,
-                    createdBy: req.horizonUser.id
+                    isPinned: true
                 }).limit(10).select('name displayName cache displayFormat');
 
                 meeting.highlightedKpis = keyKpis.map(kpi => ({
@@ -394,9 +497,12 @@ const investorMeetingController = {
                 }));
             }
 
-            // --- User Metrics (from ManualKpiSnapshot) --- NEW SECTION
+            // --- User Metrics (from ManualKpiSnapshot) ---
             if (sectionsToInclude.userMetrics) {
-                const latestSnapshot = await ManualKpiSnapshot.findOne({ /* enteredBy: req.horizonUser.id */ }).sort({ snapshotDate: -1 });
+                const latestSnapshot = await ManualKpiSnapshot.findOne({ 
+                    organization: organizationId 
+                }).sort({ snapshotDate: -1 });
+                
                 if (latestSnapshot) {
                     meeting.userMetricsSnapshot = {
                         snapshotDate: latestSnapshot.snapshotDate,
@@ -407,14 +513,17 @@ const investorMeetingController = {
                         dauMauRatio: latestSnapshot.mau && latestSnapshot.dau ? ((latestSnapshot.dau / latestSnapshot.mau) * 100).toFixed(2) + '%' : 'N/A',
                     };
                 } else {
-                    meeting.userMetricsSnapshot = null; // Or some default empty state
+                    meeting.userMetricsSnapshot = null;
                 }
             }
 
-
             // --- Runway Scenario ---
             if (sectionsToInclude.runwayScenario) {
-                const latestScenario = await RunwayScenario.findOne({ createdBy: req.horizonUser.id, isActive: true }).sort({ createdAt: -1 });
+                const latestScenario = await RunwayScenario.findOne({ 
+                    organization: organizationId, 
+                    isActive: true 
+                }).sort({ createdAt: -1 });
+                
                 if (latestScenario) {
                     meeting.linkedRunwayScenario = {
                         scenarioId: latestScenario._id,
@@ -423,13 +532,16 @@ const investorMeetingController = {
                         cashOutDate: latestScenario.dateOfCashOut,
                     };
                 } else {
-                     meeting.linkedRunwayScenario = null;
+                    meeting.linkedRunwayScenario = null;
                 }
             }
 
             // --- Fundraising Prediction ---
             if (sectionsToInclude.fundraisingPrediction) {
-                const latestPrediction = await FundraisingPrediction.findOne({ createdBy: req.horizonUser.id }).sort({ createdAt: -1 });
+                const latestPrediction = await FundraisingPrediction.findOne({ 
+                    organization: organizationId 
+                }).sort({ createdAt: -1 });
+                
                 if (latestPrediction) {
                     meeting.linkedFundraisingPrediction = {
                         predictionId: latestPrediction._id,
@@ -446,7 +558,7 @@ const investorMeetingController = {
             // --- Budget Summary ---
             if (sectionsToInclude.budgetSummary) {
                 const relevantBudget = await Budget.findOne({
-                    createdBy: req.horizonUser.id,
+                    organization: organizationId,
                     status: 'Active',
                     periodStartDate: { $lte: meeting.meetingDate },
                     periodEndDate: { $gte: meeting.meetingDate }
@@ -454,10 +566,14 @@ const investorMeetingController = {
 
                 if (relevantBudget) {
                     const actualExpenses = await Expense.aggregate([
-                        { $match: { date: { $gte: relevantBudget.periodStartDate, $lte: relevantBudget.periodEndDate } /* , createdBy: req.horizonUser.id */ } },
+                        { $match: { 
+                            organization: organizationId,
+                            date: { $gte: relevantBudget.periodStartDate, $lte: relevantBudget.periodEndDate } 
+                        }},
                         { $group: { _id: "$category", actualSpent: { $sum: "$amount" } } }
                     ]);
                     const totalActualSpent = actualExpenses.reduce((sum, exp) => sum + exp.actualSpent, 0);
+                    
                     meeting.budgetSummary = {
                         budgetName: relevantBudget.name,
                         period: `${relevantBudget.periodStartDate.toLocaleDateString()} - ${relevantBudget.periodEndDate.toLocaleDateString()}`,
@@ -465,25 +581,32 @@ const investorMeetingController = {
                         totalActualSpent: totalActualSpent,
                         totalVariance: relevantBudget.totalBudgetedAmount - totalActualSpent,
                         topCategoryVariances: relevantBudget.items.slice(0,3).map(item => {
-                             const actual = actualExpenses.find(exp => exp._id === item.category);
-                             const actualSpentVal = actual ? actual.actualSpent : 0;
-                             return { category: item.category, budgeted: item.budgetedAmount, actual: actualSpentVal, variance: item.budgetedAmount - actualSpentVal};
+                            const actual = actualExpenses.find(exp => exp._id === item.category);
+                            const actualSpentVal = actual ? actual.actualSpent : 0;
+                            return { category: item.category, budgeted: item.budgetedAmount, actual: actualSpentVal, variance: item.budgetedAmount - actualSpentVal};
                         })
                     };
                 } else {
-                     meeting.budgetSummary = null;
+                    meeting.budgetSummary = null;
                 }
             }
 
             // --- Suggested Documents ---
             if (sectionsToInclude.suggestedDocuments) {
-                const pitchDeck = await Document.findOne({ createdBy: req.horizonUser.id, category: 'Pitch Deck' }).sort({ createdAt: -1 });
-                const financialModel = await Document.findOne({ createdBy: req.horizonUser.id, tags: { $in: ['Financial Model', 'Forecast'] } }).sort({ createdAt: -1 });
+                const pitchDeck = await Document.findOne({ 
+                    organization: organizationId, 
+                    category: 'Pitch Deck' 
+                }).sort({ createdAt: -1 });
+                
+                const financialModel = await Document.findOne({ 
+                    organization: organizationId, 
+                    tags: { $in: ['Financial Model', 'Forecast'] } 
+                }).sort({ createdAt: -1 });
+                
                 meeting.suggestedDocuments = [];
                 if (pitchDeck) meeting.suggestedDocuments.push({ documentId: pitchDeck._id, fileName: pitchDeck.fileName, category: pitchDeck.category, reason: "Latest Pitch Deck" });
                 if (financialModel) meeting.suggestedDocuments.push({ documentId: financialModel._id, fileName: financialModel.fileName, category: financialModel.category, reason: "Latest Financial Model" });
             }
-
 
             // Auto-generate talking points if the section is included
             if (sectionsToInclude.talkingPoints) {
@@ -496,7 +619,7 @@ const investorMeetingController = {
                     });
                 }
                 if (meeting.highlightedMilestones?.some(m => m.status !== 'Completed' && new Date(m.plannedEndDate) < new Date())) {
-                     talkingPoints.push({
+                    talkingPoints.push({
                         title: 'Delayed Milestones', category: 'Challenge',
                         content: `Some key milestones are currently delayed. Addressing roadblocks.`,
                         priority: 2
@@ -504,7 +627,7 @@ const investorMeetingController = {
                 }
                 // Add talking point for user metrics if significant change or notable value
                 if(meeting.userMetricsSnapshot && meeting.userMetricsSnapshot.mau > 0) {
-                     talkingPoints.push({
+                    talkingPoints.push({
                         title: 'User Engagement', category: 'Update',
                         content: `MAU at ${meeting.userMetricsSnapshot.mau}, DAU at ${meeting.userMetricsSnapshot.dau}. Ratio: ${meeting.userMetricsSnapshot.dauMauRatio}.`,
                         priority: 3
@@ -513,16 +636,15 @@ const investorMeetingController = {
                 meeting.talkingPoints = talkingPoints;
             }
 
-
             meeting.preparation = {
                 ...meeting.preparation,
                 status: 'Ready',
                 dataCollectionComplete: true,
                 preparationNotes: 'Auto-prepared with selected data sections.',
-                assignedTo: req.horizonUser.id
+                assignedTo: userId
             };
             if (meeting.status === 'Scheduled') meeting.status = 'Preparation';
-            meeting.updatedBy = req.horizonUser.id;
+            meeting.updatedBy = userId;
 
             await meeting.save();
             res.json({ success: true, data: meeting, msg: 'Meeting preparation completed successfully' });
@@ -532,8 +654,18 @@ const investorMeetingController = {
             res.status(500).json({ success: false, msg: 'Server Error: Could not prepare meeting' });
         }
     },
-    // ... (addTalkingPoint, updateMeetingNotes, addFeedback, addActionItem, updateActionItem, completeMeeting, getMeetingStatistics - remain unchanged)
+
+    /**
+     * Add a talking point to a meeting
+     * @desc    Add talking point to meeting for the active organization
+     * @route   POST /api/horizon/investor-meetings/:id/talking-points
+     * @access  Private
+     */
     addTalkingPoint: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({
@@ -551,13 +683,16 @@ const investorMeetingController = {
                 });
             }
 
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
-
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found or not authorized'
+                    msg: 'Investor meeting not found within your organization'
                 });
             }
 
@@ -571,7 +706,7 @@ const investorMeetingController = {
             };
 
             meeting.talkingPoints.push(newTalkingPoint);
-            meeting.updatedBy = req.horizonUser.id;
+            meeting.updatedBy = userId;
 
             await meeting.save();
 
@@ -589,7 +724,17 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Update meeting notes
+     * @desc    Update meeting notes for the active organization
+     * @route   PUT /api/horizon/investor-meetings/:id/notes
+     * @access  Private
+     */
     updateMeetingNotes: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({
@@ -600,20 +745,23 @@ const investorMeetingController = {
 
             const { notes, summary } = req.body;
 
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
-
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found or not authorized'
+                    msg: 'Investor meeting not found within your organization'
                 });
             }
 
             if (notes !== undefined) meeting.notes = notes;
             if (summary !== undefined) meeting.summary = summary;
 
-            meeting.updatedBy = req.horizonUser.id;
+            meeting.updatedBy = userId;
 
             await meeting.save();
 
@@ -634,7 +782,17 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Add feedback to a meeting
+     * @desc    Add feedback to meeting for the active organization
+     * @route   POST /api/horizon/investor-meetings/:id/feedback
+     * @access  Private
+     */
     addFeedback: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({
@@ -652,13 +810,16 @@ const investorMeetingController = {
                 });
             }
 
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
-
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found or not authorized'
+                    msg: 'Investor meeting not found within your organization'
                 });
             }
 
@@ -671,7 +832,7 @@ const investorMeetingController = {
             };
 
             meeting.feedbackItems.push(newFeedback);
-            meeting.updatedBy = req.horizonUser.id;
+            meeting.updatedBy = userId;
 
             if (meeting.status === 'Scheduled' || meeting.status === 'Preparation') {
                 meeting.status = 'Completed';
@@ -693,7 +854,17 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Add action item to a meeting
+     * @desc    Add action item to meeting for the active organization
+     * @route   POST /api/horizon/investor-meetings/:id/actions
+     * @access  Private
+     */
     addActionItem: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({
@@ -711,26 +882,29 @@ const investorMeetingController = {
                 });
             }
 
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
-
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found or not authorized'
+                    msg: 'Investor meeting not found within your organization'
                 });
             }
 
             const newActionItem = {
                 action,
-                assignee: assignee || req.horizonUser.id,
+                assignee: assignee || userId,
                 dueDate,
                 status: 'Not Started',
                 notes
             };
 
             meeting.actionItems.push(newActionItem);
-            meeting.updatedBy = req.horizonUser.id;
+            meeting.updatedBy = userId;
 
             await meeting.save();
 
@@ -748,7 +922,17 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Update action item in a meeting
+     * @desc    Update action item in meeting for the active organization
+     * @route   PUT /api/horizon/investor-meetings/:id/actions/:actionId
+     * @access  Private
+     */
     updateActionItem: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id) ||
                 !mongoose.Types.ObjectId.isValid(req.params.actionId)) {
@@ -760,17 +944,20 @@ const investorMeetingController = {
 
             const { status, notes } = req.body;
 
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found or not authorized'
+                    msg: 'Investor meeting not found within your organization'
                 });
             }
             
             const actionItem = meeting.actionItems.id(req.params.actionId);
-
 
             if (!actionItem) {
                 return res.status(404).json({
@@ -792,7 +979,7 @@ const investorMeetingController = {
                 actionItem.notes = notes;
             }
 
-            meeting.updatedBy = req.horizonUser.id;
+            meeting.updatedBy = userId;
 
             await meeting.save();
 
@@ -810,7 +997,17 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Complete a meeting
+     * @desc    Complete meeting for the active organization
+     * @route   POST /api/horizon/investor-meetings/:id/complete
+     * @access  Private
+     */
     completeMeeting: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization and user from request ---
+        const organizationId = req.organization._id;
+        const userId = req.user._id;
+
         try {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({
@@ -821,13 +1018,16 @@ const investorMeetingController = {
 
             const { meetingEffectiveness, sentimentScore, nextSteps } = req.body;
 
-            const meeting = await InvestorMeeting.findOne({ _id: req.params.id, createdBy: req.horizonUser.id });
-
+            // --- MULTI-TENANCY: Find by _id AND organizationId ---
+            const meeting = await InvestorMeeting.findOne({ 
+                _id: req.params.id, 
+                organization: organizationId 
+            });
 
             if (!meeting) {
                 return res.status(404).json({
                     success: false,
-                    msg: 'Investor meeting not found or not authorized'
+                    msg: 'Investor meeting not found within your organization'
                 });
             }
 
@@ -835,7 +1035,7 @@ const investorMeetingController = {
             meeting.meetingEffectiveness = meetingEffectiveness;
             meeting.sentimentScore = sentimentScore;
             meeting.nextSteps = nextSteps;
-            meeting.updatedBy = req.horizonUser.id;
+            meeting.updatedBy = userId;
 
             await meeting.save();
 
@@ -845,6 +1045,8 @@ const investorMeetingController = {
                     nextMeetingDate.setDate(nextMeetingDate.getDate() + 30);
 
                     const nextMeeting = new InvestorMeeting({
+                        organization: organizationId,  // Scope to organization
+                        user: userId,                  // Track creator
                         title: `Follow-up: ${meeting.title}`,
                         meetingDate: nextMeetingDate,
                         duration: meeting.duration,
@@ -861,7 +1063,7 @@ const investorMeetingController = {
                         status: 'Scheduled',
                         previousMeetingId: meeting._id,
                         relatedRoundId: meeting.relatedRoundId,
-                        createdBy: req.horizonUser.id
+                        createdBy: userId
                     });
 
                     await nextMeeting.save();
@@ -895,23 +1097,33 @@ const investorMeetingController = {
         }
     },
 
+    /**
+     * Get meeting statistics
+     * @desc    Get meeting statistics for the active organization
+     * @route   GET /api/horizon/investor-meetings/statistics
+     * @access  Private
+     */
     getMeetingStatistics: async (req, res) => {
+        // --- MULTI-TENANCY: Get organization from request ---
+        const organizationId = req.organization._id;
+
         try {
             const { fromDate, toDate } = req.query;
-            const userFilter = { createdBy: req.horizonUser.id };
-
+            
+            // --- MULTI-TENANCY: Pass organizationId to static methods ---
+            const orgFilter = { organization: organizationId };
 
             const stats = await InvestorMeeting.getMeetingStatistics(
                 fromDate ? new Date(fromDate) : null,
                 toDate ? new Date(toDate) : null,
-                userFilter
+                orgFilter
             );
 
-            const upcomingMeetings = await InvestorMeeting.getUpcomingMeetings(5, userFilter);
+            const upcomingMeetings = await InvestorMeeting.getUpcomingMeetings(5, orgFilter);
 
-
+            // --- MULTI-TENANCY: Filter aggregations by organizationId ---
             const pendingActionItems = await InvestorMeeting.aggregate([
-                { $match: { ...userFilter, 'actionItems.status': { $ne: 'Completed' } } },
+                { $match: { organization: organizationId, 'actionItems.status': { $ne: 'Completed' } } },
                 { $unwind: '$actionItems' },
                 { $match: { 'actionItems.status': { $ne: 'Completed' } } },
                 { $group: {
@@ -922,7 +1134,7 @@ const investorMeetingController = {
             ]);
 
             const feedbackByType = await InvestorMeeting.aggregate([
-                { $match: userFilter },
+                { $match: { organization: organizationId } },
                 { $unwind: '$feedbackItems' },
                 { $group: {
                     _id: '$feedbackItems.feedbackType',

@@ -7,7 +7,9 @@ const mongoose = require('mongoose');
 
 class AdvancedMLService {
     constructor() {
-        this.models = new Map();
+        // Store models per organization for better isolation
+        this.organizationModels = new Map(); // organizationId -> models Map
+        this.globalModels = new Map(); // Shared base models
         this.isInitialized = false;
         this.initialize();
     }
@@ -15,14 +17,27 @@ class AdvancedMLService {
     async initialize() {
         if (this.isInitialized) return;
         
-        // Initialize different ML models
+        // Initialize global base models
+        await this.initializeGlobalModels();
+        
+        this.isInitialized = true;
+    }
+
+    async initializeGlobalModels() {
+        // Initialize base models that can be fine-tuned per organization
         await this.initializeExpensePredictor();
         await this.initializeRevenueForecaster();
         await this.initializeAnomalyDetector();
         await this.initializeChurnPredictor();
         await this.initializeCashFlowOptimizer();
-        
-        this.isInitialized = true;
+    }
+
+    // Get or create organization-specific models
+    getOrganizationModels(organizationId) {
+        if (!this.organizationModels.has(organizationId)) {
+            this.organizationModels.set(organizationId, new Map());
+        }
+        return this.organizationModels.get(organizationId);
     }
 
     // 1. Expense Prediction Model
@@ -46,23 +61,23 @@ class AdvancedMLService {
                 metrics: ['mae']
             });
 
-            this.models.set('expensePredictor', model);
+            this.globalModels.set('expensePredictor', model);
         } catch (error) {
             console.error('Error initializing expense predictor:', error);
         }
     }
 
-    // Train expense predictor with historical data
-    async trainExpensePredictor(userId) {
+    // Train expense predictor with historical data - NOW ORGANIZATION-SPECIFIC
+    async trainExpensePredictor(organizationId) {
         const Expense = mongoose.model('Expense');
         
-        // Get historical expenses
-        const expenses = await Expense.find({})
+        // Get historical expenses FOR THIS ORGANIZATION
+        const expenses = await Expense.find({ organization: organizationId })
             .sort({ date: 1 })
             .limit(1000);
 
         if (expenses.length < 100) {
-            console.log('Insufficient data for training expense predictor');
+            console.log(`Insufficient data for training expense predictor for organization ${organizationId}`);
             return;
         }
 
@@ -103,8 +118,14 @@ class AdvancedMLService {
         const xsNorm = this.normalizeData(xs);
         const ysNorm = this.normalizeData(ys);
 
-        // Train model
-        const model = this.models.get('expensePredictor');
+        // Clone the global model for organization-specific training
+        const globalModel = this.globalModels.get('expensePredictor');
+        const orgModels = this.getOrganizationModels(organizationId);
+        
+        // Create a copy of the global model for this organization
+        const model = await this.cloneModel(globalModel);
+        
+        // Train the organization-specific model
         await model.fit(xsNorm.normalized, ysNorm.normalized, {
             epochs: 50,
             batchSize: 32,
@@ -112,14 +133,15 @@ class AdvancedMLService {
             callbacks: {
                 onEpochEnd: (epoch, logs) => {
                     if (epoch % 10 === 0) {
-                        console.log(`Expense Predictor - Epoch ${epoch}: loss = ${logs.loss.toFixed(4)}`);
+                        console.log(`Expense Predictor [Org: ${organizationId}] - Epoch ${epoch}: loss = ${logs.loss.toFixed(4)}`);
                     }
                 }
             }
         });
 
-        // Store normalization parameters
-        this.models.set('expensePredictorNorm', {
+        // Store organization-specific model and normalization parameters
+        orgModels.set('expensePredictor', model);
+        orgModels.set('expensePredictorNorm', {
             x: { min: xsNorm.min, max: xsNorm.max },
             y: { min: ysNorm.min, max: ysNorm.max }
         });
@@ -131,19 +153,42 @@ class AdvancedMLService {
         ysNorm.normalized.dispose();
     }
 
-    // Predict future expenses
-    async predictExpenses(userId, daysAhead = 30) {
-        const model = this.models.get('expensePredictor');
-        const normParams = this.models.get('expensePredictorNorm');
+    // Clone a model for organization-specific use
+    async cloneModel(model) {
+        const modelConfig = model.toJSON();
+        const clonedModel = await tf.loadLayersModel({
+            load: async () => modelConfig
+        });
+        
+        // Copy weights
+        const weights = model.getWeights();
+        const clonedWeights = weights.map(w => w.clone());
+        clonedModel.setWeights(clonedWeights);
+        
+        // Compile with same configuration
+        clonedModel.compile({
+            optimizer: tf.train.adam(0.001),
+            loss: 'meanSquaredError',
+            metrics: ['mae']
+        });
+        
+        return clonedModel;
+    }
+
+    // Predict future expenses - NOW ORGANIZATION-SPECIFIC
+    async predictExpenses(organizationId, daysAhead = 30) {
+        const orgModels = this.getOrganizationModels(organizationId);
+        const model = orgModels.get('expensePredictor') || this.globalModels.get('expensePredictor');
+        const normParams = orgModels.get('expensePredictorNorm');
         
         if (!model || !normParams) {
-            throw new Error('Expense predictor not trained');
+            throw new Error(`Expense predictor not trained for organization ${organizationId}`);
         }
 
         const Expense = mongoose.model('Expense');
         
-        // Get last 30 days of expenses
-        const recentExpenses = await Expense.find({})
+        // Get last 30 days of expenses FOR THIS ORGANIZATION
+        const recentExpenses = await Expense.find({ organization: organizationId })
             .sort({ date: -1 })
             .limit(30);
 
@@ -208,19 +253,20 @@ class AdvancedMLService {
             metrics: ['mae']
         });
 
-        this.models.set('revenueForecaster', model);
+        this.globalModels.set('revenueForecaster', model);
     }
 
     // 3. Anomaly Detection
     async initializeAnomalyDetector() {
         // Isolation Forest implementation for anomaly detection
-        this.models.set('anomalyDetector', {
+        this.globalModels.set('anomalyDetector', {
             type: 'isolationForest',
             contamination: 0.1, // Expected proportion of outliers
             maxSamples: 256
         });
     }
 
+    // Detect anomalies - transactions should already be filtered by organization
     async detectAnomalies(transactions, type = 'expense') {
         const anomalies = [];
         
@@ -334,13 +380,13 @@ class AdvancedMLService {
             metrics: ['accuracy']
         });
 
-        this.models.set('churnPredictor', model);
+        this.globalModels.set('churnPredictor', model);
     }
 
     // 5. Cash Flow Optimizer
     async initializeCashFlowOptimizer() {
         // Genetic algorithm parameters for optimization
-        this.models.set('cashFlowOptimizer', {
+        this.globalModels.set('cashFlowOptimizer', {
             populationSize: 100,
             generations: 50,
             mutationRate: 0.1,
@@ -349,8 +395,9 @@ class AdvancedMLService {
         });
     }
 
+    // Optimize cash flow - currentState should include organization-specific data
     async optimizeCashFlow(currentState, constraints) {
-        const optimizer = this.models.get('cashFlowOptimizer');
+        const optimizer = this.globalModels.get('cashFlowOptimizer');
         
         // Generate initial population
         let population = this.generateInitialPopulation(
@@ -677,10 +724,12 @@ class AdvancedMLService {
         return ((improvedMinBalance - minBalance) / minBalance) * 100;
     }
 
-    // Advanced pattern recognition
-    async identifySpendingPatterns(userId) {
+    // Advanced pattern recognition - NOW ORGANIZATION-SPECIFIC
+    async identifySpendingPatterns(organizationId) {
         const Expense = mongoose.model('Expense');
-        const expenses = await Expense.find({}).sort({ date: -1 }).limit(500);
+        const expenses = await Expense.find({ organization: organizationId })
+            .sort({ date: -1 })
+            .limit(500);
 
         const patterns = {
             seasonal: await this.detectSeasonalPatterns(expenses),
@@ -896,6 +945,20 @@ class AdvancedMLService {
             return (value / 1000).toFixed(1) + 'K';
         }
         return value.toFixed(0);
+    }
+
+    // Clean up organization-specific models when needed
+    async cleanupOrganizationModels(organizationId) {
+        const orgModels = this.organizationModels.get(organizationId);
+        if (orgModels) {
+            // Dispose of TensorFlow models
+            orgModels.forEach((model, key) => {
+                if (model && typeof model.dispose === 'function') {
+                    model.dispose();
+                }
+            });
+            this.organizationModels.delete(organizationId);
+        }
     }
 }
 

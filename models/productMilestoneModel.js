@@ -2,372 +2,369 @@
 const mongoose = require('mongoose');
 
 /**
- * Task Schema - nested document for milestone tasks
+ * User's original Task Schema - Preserved
  */
 const taskSchema = new mongoose.Schema({
-    taskName: { 
-        type: String, 
-        required: true, 
-        trim: true 
+    // _id: true is default for subdocuments unless specified as false. User had it as true.
+    taskName: {
+        type: String,
+        required: true,
+        trim: true
     },
-    description: { 
-        type: String, 
-        trim: true 
+    description: {
+        type: String,
+        trim: true
     },
-    assignee: { 
-        type: mongoose.Schema.Types.ObjectId, 
+    assignee: { // This Headcount record should also belong to the same organization
+        type: mongoose.Schema.Types.ObjectId,
         ref: 'Headcount',
-        comment: 'Team member responsible for this task' 
+        comment: 'Team member responsible for this task'
     },
-    status: { 
-        type: String, 
+    status: {
+        type: String,
         required: true,
         enum: [
-            'Not Started', 
-            'In Progress', 
-            'Blocked', 
-            'Completed', 
+            'Not Started',
+            'In Progress',
+            'Blocked',
+            'Completed',
             'Cancelled'
         ],
-        default: 'Not Started' 
+        default: 'Not Started'
     },
-    priority: { 
+    priority: {
         type: String,
         enum: ['Critical', 'High', 'Medium', 'Low'],
-        default: 'Medium' 
+        default: 'Medium'
     },
-    completionPercentage: { 
+    completionPercentage: {
         type: Number,
         min: 0,
         max: 100,
-        default: 0 
+        default: 0
     },
-    startDate: { 
-        type: Date 
+    startDate: {
+        type: Date
     },
-    dueDate: { 
-        type: Date 
+    dueDate: {
+        type: Date
     },
-    completedDate: { 
-        type: Date 
+    completedDate: {
+        type: Date
     },
-    dependencies: [{ 
-        type: String,
-        trim: true 
+    dependencies: [{ // These could be task names or IDs of other tasks (potentially within this milestone or other milestones)
+        type: String, // If names, consider if they need to be unique or how they are resolved.
+        trim: true
     }],
-    notes: { 
+    notes: {
         type: String,
-        trim: true 
+        trim: true
     }
-}, { _id: true });
+}); // User had _id: true, which is default, so kept as is.
 
 /**
- * Impact Assessment Schema - for tracking business impact of milestone
+ * User's original Impact Assessment Schema - Preserved
  */
 const impactAssessmentSchema = new mongoose.Schema({
-    impactType: { 
+    _id: false, // User had _id: false
+    impactType: {
         type: String,
         enum: [
-            'User Growth', 
-            'Revenue Increase', 
-            'Cost Reduction', 
-            'User Retention', 
-            'Conversion Rate', 
-            'Customer Satisfaction', 
-            'Technical Debt', 
+            'User Growth',
+            'Revenue Increase',
+            'Cost Reduction',
+            'User Retention',
+            'Conversion Rate',
+            'Customer Satisfaction',
+            'Technical Debt',
             'Other'
         ],
-        required: true 
+        required: true
     },
-    projectedImpact: { 
+    projectedImpact: {
         type: String,
         trim: true,
-        required: true 
+        required: true
     },
-    impactMetric: { 
+    impactMetric: { // Name of the KPI or metric affected
         type: String,
-        trim: true 
+        trim: true
     },
-    baselineValue: { 
-        type: Number 
+    baselineValue: {
+        type: Number
     },
-    targetValue: { 
-        type: Number 
+    targetValue: {
+        type: Number
     },
-    actualValue: { 
-        type: Number 
+    actualValue: {
+        type: Number
     },
-    confidenceLevel: { 
+    confidenceLevel: {
         type: String,
         enum: ['Very High', 'High', 'Medium', 'Low', 'Very Low'],
-        default: 'Medium' 
+        default: 'Medium'
     },
-    notes: { 
+    notes: {
         type: String,
-        trim: true 
-    }
-}, { _id: false });
-
-/**
- * Main Product Milestone Schema
- * Tracks product features, projects, and initiatives
- */
-const productMilestoneSchema = new mongoose.Schema({
-    // Basic milestone information
-    name: { 
-        type: String, 
-        required: true, 
-        trim: true 
-    },
-    description: { 
-        type: String, 
-        trim: true 
-    },
-    milestoneType: { 
-        type: String,
-        required: true,
-        enum: [
-            'Feature', 
-            'Bug Fix', 
-            'Performance Improvement', 
-            'UX Enhancement', 
-            'Infrastructure', 
-            'Security', 
-            'Compliance', 
-            'Research', 
-            'Other'
-        ],
-        default: 'Feature' 
-    },
-    
-    // Status and progress
-    status: { 
-        type: String,
-        required: true,
-        enum: [
-            'Planning', 
-            'In Development', 
-            'Testing', 
-            'Deploying', 
-            'Completed', 
-            'On Hold', 
-            'Cancelled'
-        ],
-        default: 'Planning',
-        index: true 
-    },
-    completionPercentage: { 
-        type: Number,
-        min: 0,
-        max: 100,
-        default: 0 
-    },
-    
-    // Timeline
-    plannedStartDate: { 
-        type: Date,
-        required: true 
-    },
-    plannedEndDate: { 
-        type: Date,
-        required: true 
-    },
-    actualStartDate: { 
-        type: Date 
-    },
-    actualEndDate: { 
-        type: Date 
-    },
-    
-    // Team assignment
-    productOwner: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Headcount' 
-    },
-    teamMembers: [{ 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Headcount' 
-    }],
-    
-    // Tasks and dependencies
-    tasks: [taskSchema],
-    dependencies: [{
-        milestoneName: { 
-            type: String,
-            trim: true 
-        },
-        milestoneId: { 
-            type: mongoose.Schema.Types.ObjectId, 
-            ref: 'ProductMilestone' 
-        },
-        dependencyType: { 
-            type: String,
-            enum: ['Blocks', 'Blocked By', 'Related To'],
-            default: 'Blocked By' 
-        }
-    }],
-    
-    // Business impact
-    businessImpact: impactAssessmentSchema,
-    
-    // Resources and tracking
-    estimatedEffort: { 
-        type: Number,
-        comment: 'Estimated person-days required' 
-    },
-    actualEffort: { 
-        type: Number,
-        comment: 'Actual person-days spent' 
-    },
-    budget: { 
-        type: Number,
-        comment: 'Budget allocated (if applicable)' 
-    },
-    
-    // Categorization and prioritization
-    quarter: { 
-        type: String,
-        match: /^[0-9]{4}-Q[1-4]$/,
-        comment: 'Format: YYYY-QN (e.g., 2025-Q2)' 
-    },
-    priority: { 
-        type: String,
-        enum: ['Critical', 'High', 'Medium', 'Low'],
-        default: 'Medium' 
-    },
-    tags: [{ 
-        type: String, 
-        trim: true 
-    }],
-    
-    // External connections
-    relatedDocuments: [{ 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'Document' 
-    }],
-    
-    // Investor presentation data
-    visibleToInvestors: { 
-        type: Boolean,
-        default: true 
-    },
-    investorSummary: { 
-        type: String,
-        trim: true,
-        comment: 'Concise summary for investor presentations' 
-    },
-    highlightInReports: { 
-        type: Boolean,
-        default: false 
-    },
-    
-    // Additional info
-    notes: { 
-        type: String, 
-        trim: true 
-    },
-    
-    // Metadata
-    createdBy: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'HorizonUser', 
-        required: true 
-    },
-    updatedBy: { 
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: 'HorizonUser' 
-    },
-    createdAt: { 
-        type: Date, 
-        default: Date.now 
-    },
-    updatedAt: { 
-        type: Date, 
-        default: Date.now 
+        trim: true
     }
 });
 
 /**
- * Pre-save middleware for product milestone
+ * Main Product Milestone Schema - With multi-tenancy fields added
+ */
+const productMilestoneSchema = new mongoose.Schema({
+    // --- Fields for Multi-Tenancy (ADDED) ---
+    organization: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Organization',
+        required: [true, 'Organization ID is required for a product milestone.'], // Added required message
+        index: true,
+    },
+    // `createdBy` and `updatedBy` fields already exist and reference HorizonUser.
+
+    // --- User's Existing Fields (Preserved) ---
+    name: {
+        type: String,
+        required: true,
+        trim: true
+    },
+    description: {
+        type: String,
+        trim: true
+    },
+    milestoneType: {
+        type: String,
+        required: true,
+        enum: [
+            'Feature',
+            'Bug Fix',
+            'Performance Improvement',
+            'UX Enhancement',
+            'Infrastructure',
+            'Security',
+            'Compliance',
+            'Research',
+            'Other'
+        ],
+        default: 'Feature'
+    },
+    status: {
+        type: String,
+        required: true,
+        enum: [
+            'Planning',
+            'In Development',
+            'Testing',
+            'Deploying',
+            'Completed',
+            'On Hold',
+            'Cancelled'
+        ],
+        default: 'Planning',
+        index: true
+    },
+    completionPercentage: {
+        type: Number,
+        min: 0,
+        max: 100,
+        default: 0
+    },
+    plannedStartDate: {
+        type: Date,
+        required: true
+    },
+    plannedEndDate: {
+        type: Date,
+        required: true
+    },
+    actualStartDate: {
+        type: Date
+    },
+    actualEndDate: {
+        type: Date
+    },
+    productOwner: { // This Headcount record should also belong to the same organization
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Headcount'
+    },
+    teamMembers: [{ // These Headcount records should also belong to the same organization
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Headcount'
+    }],
+    tasks: [taskSchema],
+    dependencies: [{ // These ProductMilestone records should also belong to the same organization
+        _id: false, // ADDED
+        milestoneName: { // This is for display, the ID is the actual link
+            type: String,
+            trim: true
+        },
+        milestoneId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'ProductMilestone'
+        },
+        dependencyType: {
+            type: String,
+            enum: ['Blocks', 'Blocked By', 'Related To'],
+            default: 'Blocked By'
+        }
+    }],
+    businessImpact: impactAssessmentSchema,
+    estimatedEffort: {
+        type: Number,
+        comment: 'Estimated person-days required'
+    },
+    actualEffort: {
+        type: Number,
+        comment: 'Actual person-days spent'
+    },
+    budget: { // Consider adding currency if this budget is monetary
+        type: Number,
+        comment: 'Budget allocated (if applicable)'
+    },
+    quarter: {
+        type: String,
+        match: /^[0-9]{4}-Q[1-4]$/,
+        comment: 'Format: YYYY-QN (e.g., 2025-Q2)',
+        trim: true // Added trim
+    },
+    priority: {
+        type: String,
+        enum: ['Critical', 'High', 'Medium', 'Low'],
+        default: 'Medium'
+    },
+    tags: [{
+        type: String,
+        trim: true,
+        lowercase: true // Added lowercase
+    }],
+    relatedDocuments: [{ // These Document records should also belong to the same organization
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Document'
+    }],
+    visibleToInvestors: {
+        type: Boolean,
+        default: true
+    },
+    investorSummary: {
+        type: String,
+        trim: true,
+        comment: 'Concise summary for investor presentations'
+    },
+    highlightInReports: {
+        type: Boolean,
+        default: false
+    },
+    notes: {
+        type: String,
+        trim: true
+    },
+    createdBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'HorizonUser',
+        required: true
+    },
+    updatedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'HorizonUser'
+    },
+    // createdAt: { type: Date, default: Date.now }, // Will be handled by timestamps: true
+    // updatedAt: { type: Date, default: Date.now }  // Will be handled by timestamps: true
+}, {
+    timestamps: true, // ADDED: Automatically adds createdAt and updatedAt
+    collection: 'productmilestones', // ADDED: Explicit collection name
+});
+
+/**
+ * User's original Pre-save middleware for product milestone - Only manual updatedAt removed
  * Updates completion percentage and dates based on tasks
  */
 productMilestoneSchema.pre('save', function(next) {
-    this.updatedAt = Date.now();
-    
-    // Update completion percentage based on tasks if available
+    // this.updatedAt = Date.now(); // REMOVED: Handled by timestamps: true
+
+    // User's original logic for completionPercentage and status/dates - Preserved
     if (this.tasks && this.tasks.length > 0) {
         const totalTasks = this.tasks.length;
-        const completedTasks = this.tasks.filter(task => 
+        const completedTasks = this.tasks.filter(task =>
             task.status === 'Completed'
         ).length;
-        
-        // Calculate weighted average of task completion percentages
-        const totalCompletionPercentage = this.tasks.reduce((sum, task) => 
+
+        const totalCompletionPercentage = this.tasks.reduce((sum, task) =>
             sum + (task.completionPercentage || 0), 0);
-            
-        this.completionPercentage = totalTasks > 0 
-            ? Math.round(totalCompletionPercentage / totalTasks) 
+
+        this.completionPercentage = totalTasks > 0
+            ? Math.round(totalCompletionPercentage / totalTasks)
             : 0;
-            
-        // Update status if all tasks are completed
-        if (totalTasks > 0 && completedTasks === totalTasks) {
+
+        if (totalTasks > 0 && completedTasks === totalTasks && this.status !== 'Completed' && this.status !== 'Cancelled') { // Added checks for current status
             this.status = 'Completed';
             this.actualEndDate = this.actualEndDate || new Date();
         }
     }
-    
-    // Set actualStartDate if status changed to In Development
-    if (this.status === 'In Development' && !this.actualStartDate) {
-        this.actualStartDate = new Date();
+
+    if (this.isModified('status')) { // Check if status is modified to avoid unintended updates
+        if (this.status === 'In Development' && !this.actualStartDate) {
+            this.actualStartDate = new Date();
+        }
+        if (this.status === 'Completed' && !this.actualEndDate) {
+            this.actualEndDate = new Date();
+        }
     }
-    
-    // Set actualEndDate if status changed to Completed
-    if (this.status === 'Completed' && !this.actualEndDate) {
-        this.actualEndDate = new Date();
-    }
-    
     next();
 });
 
 /**
- * Static method to get milestone status summary
+ * User's original Static method to get milestone status summary - Modified for multi-tenancy
  */
-productMilestoneSchema.statics.getStatusSummary = async function() {
+productMilestoneSchema.statics.getStatusSummary = async function(organizationId) { // ADDED organizationId
+    const query = { organization: organizationId }; // ADDED organization filter
     return this.aggregate([
-        { $group: { 
-            _id: '$status', 
-            count: { $sum: 1 } 
+        { $match: query }, // Filter by organization
+        { $group: {
+            _id: '$status',
+            count: { $sum: 1 }
         }},
         { $sort: { _id: 1 } }
     ]);
 };
 
 /**
- * Static method to get milestones by quarter
+ * User's original Static method to get milestones by quarter - Modified for multi-tenancy
  */
-productMilestoneSchema.statics.getMilestonesByQuarter = async function() {
+productMilestoneSchema.statics.getMilestonesByQuarter = async function(organizationId) { // ADDED organizationId
+    const query = { // ADDED organization filter
+        organization: organizationId,
+        quarter: { $exists: true, $ne: null }
+    };
     return this.aggregate([
-        { $match: { quarter: { $exists: true, $ne: null } } },
-        { $group: { 
-            _id: '$quarter', 
-            milestones: { $push: { 
-                id: '$_id', 
-                name: '$name', 
+        { $match: query },
+        { $group: {
+            _id: '$quarter',
+            milestones: { $push: {
+                id: '$_id',
+                name: '$name',
                 status: '$status',
                 completionPercentage: '$completionPercentage'
-            }} 
+            }}
         }},
         { $sort: { _id: 1 } }
     ]);
 };
 
-// Add indexes for common queries
-productMilestoneSchema.index({ status: 1 });
-productMilestoneSchema.index({ quarter: 1 });
-productMilestoneSchema.index({ plannedEndDate: 1 });
-productMilestoneSchema.index({ priority: 1, status: 1 });
-productMilestoneSchema.index({ visibleToInvestors: 1, highlightInReports: 1 });
+// User's original Indexes - Preserved and new ones added/updated
+productMilestoneSchema.index({ organization: 1, name: 1 }, { unique: true, collation: { locale: 'en', strength: 2 } }); // Name unique within org
+productMilestoneSchema.index({ organization: 1, status: 1 }); // ADDED organization
+productMilestoneSchema.index({ organization: 1, quarter: 1 }); // ADDED organization
+productMilestoneSchema.index({ organization: 1, plannedEndDate: 1 }); // ADDED organization
+productMilestoneSchema.index({ organization: 1, priority: 1, status: 1 }); // ADDED organization
+productMilestoneSchema.index({ organization: 1, visibleToInvestors: 1, highlightInReports: 1 }); // ADDED organization
+// Original indexes preserved but now less specific without organization:
+// productMilestoneSchema.index({ status: 1 });
+// productMilestoneSchema.index({ quarter: 1 });
+// productMilestoneSchema.index({ plannedEndDate: 1 });
+// productMilestoneSchema.index({ priority: 1, status: 1 });
+// productMilestoneSchema.index({ visibleToInvestors: 1, highlightInReports: 1 });
 
-// Create model
-const ProductMilestone = mongoose.model('ProductMilestone', productMilestoneSchema);
+// Create model (User's original export structure)
+const ProductMilestone = mongoose.models.ProductMilestone || mongoose.model('ProductMilestone', productMilestoneSchema);
 module.exports = ProductMilestone;

@@ -1,162 +1,117 @@
 // routes/financialRoutes.js
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
-const financialController = require('../controllers/financialController');
-const { getTransactionCategorizer } = require('../services/transactionCategorizer');
+// --- MULTI-TENANCY: Import all necessary middleware ---
+const {
+    protect,
+    requireActiveOrganization,
+    authorizeOrganizationRole
+} = require('../middleware/authMiddleware'); // Ensure path is correct
+const financialController = require('../controllers/financialController'); // Ensure this points to the multi-tenancy updated controller
+const { getTransactionCategorizer } = require('../services/transactionCategorizer'); // Preserved
+const Expense = require('../models/expenseModel'); // Preserved for the :id/correct-category route
 
-// Apply protect middleware to all routes in this file
-router.use(protect);
+// --- MULTI-TENANCY: Apply global protection and require an active organization for all routes in this file ---
+router.use(protect); // Ensures user is authenticated
+router.use(requireActiveOrganization); // Ensures user has an active organization context
 
 // --- Bank Account Management (Module 2.1) ---
-// @route   POST /api/horizon/financials/bank-accounts
-// @desc    Add a new bank account record
-// @access  Private (Founders)
-router.post('/bank-accounts', financialController.addBankAccount);
-
-// @route   GET /api/horizon/financials/bank-accounts
-// @desc    Get all bank account records
-// @access  Private (Founders)
-router.get('/bank-accounts', financialController.getBankAccounts);
-
-// @route   GET /api/horizon/financials/bank-accounts/:id
-// @desc    Get a single bank account by ID
-// @access  Private (Founders)
-router.get('/bank-accounts/:id', financialController.getBankAccountById);
-
-// @route   PUT /api/horizon/financials/bank-accounts/:id
-// @desc    Update a bank account record (e.g., current balance)
-// @access  Private (Founders)
-router.put('/bank-accounts/:id', financialController.updateBankAccount);
-
-// @route   DELETE /api/horizon/financials/bank-accounts/:id
-// @desc    Delete a bank account record
-// @access  Private (Founders)
-router.delete('/bank-accounts/:id', financialController.deleteBankAccount);
-
+// Assuming 'owner' and 'member' can manage bank accounts
+router.post('/bank-accounts', authorizeOrganizationRole(['owner', 'member']), financialController.addBankAccount);
+router.get('/bank-accounts', authorizeOrganizationRole(['owner', 'member']), financialController.getBankAccounts);
+router.get('/bank-accounts/:id', authorizeOrganizationRole(['owner', 'member']), financialController.getBankAccountById);
+router.put('/bank-accounts/:id', authorizeOrganizationRole(['owner', 'member']), financialController.updateBankAccount);
+router.delete('/bank-accounts/:id', authorizeOrganizationRole(['owner', 'member']), financialController.deleteBankAccount); // Or restrict to 'owner'
 
 // --- Expense Tracking (Module 2.2) ---
-// @route   POST /api/horizon/financials/expenses
-// @desc    Add a new expense record
-// @access  Private (Founders)
-router.post('/expenses', financialController.addExpense);
-
-// @route   GET /api/horizon/financials/expenses
-// @desc    Get all expense records (with optional filtering by date, category)
-// @access  Private (Founders)
-router.get('/expenses', financialController.getExpenses);
-
-// @route   GET /api/horizon/financials/expenses/:id
-// @desc    Get a single expense by ID
-// @access  Private (Founders)
-router.get('/expenses/:id', financialController.getExpenseById);
-
-// @route   PUT /api/horizon/financials/expenses/:id
-// @desc    Update an expense record
-// @access  Private (Founders)
-router.put('/expenses/:id', financialController.updateExpense);
-
-// @route   DELETE /api/horizon/financials/expenses/:id
-// @desc    Delete an expense record
-// @access  Private (Founders)
-router.delete('/expenses/:id', financialController.deleteExpense);
-
+// Assuming 'owner' and 'member' can manage expenses
+router.post('/expenses', authorizeOrganizationRole(['owner', 'member']), financialController.addExpense);
+router.get('/expenses', authorizeOrganizationRole(['owner', 'member']), financialController.getExpenses);
+router.get('/expenses/:id', authorizeOrganizationRole(['owner', 'member']), financialController.getExpenseById);
+router.put('/expenses/:id', authorizeOrganizationRole(['owner', 'member']), financialController.updateExpense);
+router.delete('/expenses/:id', authorizeOrganizationRole(['owner', 'member']), financialController.deleteExpense); // Or restrict to 'owner'
 
 // --- Revenue Tracking (Module 2.3) ---
-// @route   POST /api/horizon/financials/revenue
-// @desc    Add a new revenue record
-// @access  Private (Founders)
-router.post('/revenue', financialController.addRevenue);
-
-// @route   GET /api/horizon/financials/revenue
-// @desc    Get all revenue records (with optional filtering by date, source)
-// @access  Private (Founders)
-router.get('/revenue', financialController.getRevenueEntries);
-
-// @route   GET /api/horizon/financials/revenue/:id
-// @desc    Get a single revenue entry by ID
-// @access  Private (Founders)
-router.get('/revenue/:id', financialController.getRevenueEntryById);
-
-// @route   PUT /api/horizon/financials/revenue/:id
-// @desc    Update a revenue record
-// @access  Private (Founders)
-router.put('/revenue/:id', financialController.updateRevenueEntry);
-
-// @route   DELETE /api/horizon/financials/revenue/:id
-// @desc    Delete a revenue record
-// @access  Private (Founders)
-router.delete('/revenue/:id', financialController.deleteRevenueEntry);
-
+// Assuming 'owner' and 'member' can manage revenue
+router.post('/revenue', authorizeOrganizationRole(['owner', 'member']), financialController.addRevenue);
+router.get('/revenue', authorizeOrganizationRole(['owner', 'member']), financialController.getRevenueEntries);
+router.get('/revenue/:id', authorizeOrganizationRole(['owner', 'member']), financialController.getRevenueEntryById);
+router.put('/revenue/:id', authorizeOrganizationRole(['owner', 'member']), financialController.updateRevenueEntry);
+router.delete('/revenue/:id', authorizeOrganizationRole(['owner', 'member']), financialController.deleteRevenueEntry); // Or restrict to 'owner'
 
 // --- Fund Utilization & Overview (Module 2.1 & 2.4) ---
-// @route   GET /api/horizon/financials/overview
-// @desc    Get financial overview (total funds, balances, burn rate, runway)
-// @access  Private (Founders)
-router.get('/overview', financialController.getFinancialOverview);
+// Assuming 'owner' and 'member' can view overview and reports
+router.get('/overview', authorizeOrganizationRole(['owner', 'member']), financialController.getFinancialOverview);
+router.get('/fund-utilization', authorizeOrganizationRole(['owner', 'member']), financialController.getFundUtilizationReport);
 
-// @route   GET /api/horizon/financials/fund-utilization
-// @desc    Get fund utilization report (expenses by category)
-// @access  Private (Founders)
-router.get('/fund-utilization', financialController.getFundUtilizationReport);
-
-
-router.post('/expenses/auto-categorize', async (req, res) => {
+// --- Transaction Categorization Routes ---
+// These utilities operate in the context of an organization's data or potential data.
+router.post('/expenses/auto-categorize', authorizeOrganizationRole(['owner', 'member']), async (req, res) => {
     try {
         const { description, amount, vendor } = req.body;
-        
-        const categorizer = await getTransactionCategorizer();
+        // The categorizer service itself doesn't need orgId if it's a pure function,
+        // but the context of calling it is org-specific.
+        const categorizer = await getTransactionCategorizer(); // This service might be initialized once.
         const result = await categorizer.categorizeTransaction(
             description,
             amount,
             vendor
         );
-        
         res.json(result);
     } catch (error) {
-        console.error('Categorization error:', error);
+        console.error(`Categorization error for org ${req.organization._id}:`, error.message, error.stack);
         res.status(500).json({ error: 'Failed to categorize transaction' });
     }
 });
 
-router.post('/expenses/bulk-categorize', async (req, res) => {
+router.post('/expenses/bulk-categorize', authorizeOrganizationRole(['owner', 'member']), async (req, res) => {
     try {
-        const { transactions } = req.body;
-        
+        const { transactions } = req.body; // Array of { description, amount, vendor }
+        if (!Array.isArray(transactions) || transactions.length === 0) {
+            return res.status(400).json({ error: 'Transactions array is required.' });
+        }
         const categorizer = await getTransactionCategorizer();
         const results = await categorizer.bulkCategorize(transactions);
-        
         res.json({ results });
     } catch (error) {
-        console.error('Bulk categorization error:', error);
+        console.error(`Bulk categorization error for org ${req.organization._id}:`, error.message, error.stack);
         res.status(500).json({ error: 'Failed to categorize transactions' });
     }
 });
 
-router.post('/expenses/:id/correct-category', async (req, res) => {
+router.post('/expenses/:id/correct-category', authorizeOrganizationRole(['owner', 'member']), async (req, res) => {
+    // --- MULTI-TENANCY: Get organization from request ---
+    const organizationId = req.organization._id;
     try {
         const { correctCategory } = req.body;
-        const expense = await Expense.findById(req.params.id);
-        
-        if (!expense) {
-            return res.status(404).json({ error: 'Expense not found' });
+        if (!correctCategory) {
+            return res.status(400).json({ error: 'Correct category is required.' });
         }
-        
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ error: 'Invalid Expense ID format' });
+        }
+
+        // --- MULTI-TENANCY: Ensure expense belongs to the active organization ---
+        const expense = await Expense.findOne({ _id: req.params.id, organization: organizationId });
+        if (!expense) {
+            return res.status(404).json({ error: 'Expense not found within your organization.' });
+        }
+
         const categorizer = await getTransactionCategorizer();
         await categorizer.learnFromCorrection(
-            expense._id,
+            expense._id.toString(), // Pass ID as string if service expects it
             expense.description,
             expense.vendor,
             correctCategory
         );
-        
-        // Update the expense
+
         expense.category = correctCategory;
+        // expense.updatedBy = req.user._id; // If Expense model has updatedBy
         await expense.save();
-        
-        res.json({ message: 'Category updated and model trained' });
+
+        res.json({ message: 'Category updated and model trained successfully for this expense.' });
     } catch (error) {
-        console.error('Category correction error:', error);
+        console.error(`Category correction error for org ${organizationId}, expense ${req.params.id}:`, error.message, error.stack);
         res.status(500).json({ error: 'Failed to update category' });
     }
 });
