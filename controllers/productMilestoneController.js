@@ -140,7 +140,7 @@ const productMilestoneController = {
                 .populate('productOwner', 'name')
                 .populate('teamMembers', 'name title')
                 .populate('tasks.assignee', 'name')
-                .populate('user', 'name email');  // Show who created it
+                .populate('createdBy', 'name email');  // Show who created it
 
             // Get total count for pagination
             const total = await ProductMilestone.countDocuments(filter);
