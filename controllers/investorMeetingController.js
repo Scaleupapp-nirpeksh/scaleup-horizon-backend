@@ -87,7 +87,7 @@ const investorMeetingController = {
 
             const newMeeting = new InvestorMeeting({
                 organization: organizationId,  // Scope to organization
-                user: userId,                  // Track creator
+                //user: userId,                  // Track creator
                 title,
                 meetingDate,
                 duration: duration || 60,
@@ -189,7 +189,7 @@ const investorMeetingController = {
                 .limit(parseInt(limit))
                 .populate('preparation.assignedTo', 'name')
                 .populate('investors.investorId', 'name entityName')
-                .populate('user', 'name email')  // Show who created it
+                .populate('createdBy', 'name email')  // Show who created it
                 .select('-metricSnapshots -talkingPoints -feedbackItems -actionItems -financialSnapshot -teamUpdates -highlightedMilestones -highlightedKpis -linkedRunwayScenario -linkedFundraisingPrediction -budgetSummary -suggestedDocuments -userMetricsSnapshot');
 
             const total = await InvestorMeeting.countDocuments(filter);
@@ -240,7 +240,7 @@ const investorMeetingController = {
             .populate('relatedRoundId', 'name targetAmount')
             .populate('linkedRunwayScenario.scenarioId', 'name totalRunwayMonths dateOfCashOut')
             .populate('linkedFundraisingPrediction.predictionId', 'predictionName targetRoundSize predictedCloseDate overallProbability')
-            .populate('user', 'name email');  // Show who created it
+            .populate('createdBy', 'name email');  // Show who created it
 
             if (!meeting) {
                 return res.status(404).json({ success: false, msg: 'Investor meeting not found within your organization' });
@@ -1114,12 +1114,15 @@ const investorMeetingController = {
             const orgFilter = { organization: organizationId };
 
             const stats = await InvestorMeeting.getMeetingStatistics(
+                organizationId, // Pass organizationId first
                 fromDate ? new Date(fromDate) : null,
-                toDate ? new Date(toDate) : null,
-                orgFilter
+                toDate ? new Date(toDate) : null
             );
 
-            const upcomingMeetings = await InvestorMeeting.getUpcomingMeetings(5, orgFilter);
+            const upcomingMeetings = await InvestorMeeting.getUpcomingMeetings(
+                organizationId, // Pass organizationId first
+                5 // Pass the limit (or rely on default)
+            );
 
             // --- MULTI-TENANCY: Filter aggregations by organizationId ---
             const pendingActionItems = await InvestorMeeting.aggregate([
