@@ -11,15 +11,16 @@ const Membership = require('../models/membershipModel');
  * @route   POST /api/horizon/tasks
  * @access  Private (Requires active organization)
  */
+// Update the createTask function to handle subcategory
 exports.createTask = async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
         const {
-            title, description, category, tags, priority,
+            title, description, category, subcategory, tags, priority,
             assignee, dueDate, startDate, estimatedHours,
-            parentTask, blockedBy, attachments
+            parentTask, blockedBy, attachments, customFields
         } = req.body;
 
         // Validate required fields
@@ -42,6 +43,12 @@ exports.createTask = async (req, res) => {
             }
         }
 
+        // Handle subcategory from customFields if provided
+        let finalSubcategory = subcategory;
+        if (!finalSubcategory && customFields?.subcategory) {
+            finalSubcategory = customFields.subcategory;
+        }
+
         // Create the task
         const newTask = new Task({
             organization: req.organization._id,
@@ -49,6 +56,7 @@ exports.createTask = async (req, res) => {
             title,
             description,
             category,
+            subcategory: finalSubcategory,
             tags,
             priority,
             assignee,
@@ -58,6 +66,7 @@ exports.createTask = async (req, res) => {
             parentTask,
             blockedBy,
             attachments,
+            customFields,
             watchers: [req.user._id] // Creator automatically watches the task
         });
 
@@ -106,16 +115,16 @@ exports.createTask = async (req, res) => {
         session.endSession();
     }
 };
-
 /**
  * @desc    Get all tasks for the organization with filters
  * @route   GET /api/horizon/tasks
  * @access  Private
  */
+// Update the getTasks function to include subcategory in filters
 exports.getTasks = async (req, res) => {
     try {
         const {
-            status, priority, category, assignee, creator,
+            status, priority, category, subcategory, assignee, creator,
             search, sortBy, page = 1, limit = 20,
             includeArchived = false, myTasks = false
         } = req.query;
@@ -127,6 +136,7 @@ exports.getTasks = async (req, res) => {
         if (status) query.status = status;
         if (priority) query.priority = priority;
         if (category) query.category = category;
+        if (subcategory) query.subcategory = subcategory;
         if (assignee) query.assignee = assignee;
         if (creator) query.creator = creator;
         if (!includeArchived || includeArchived === 'false') query.isArchived = false;
@@ -140,11 +150,12 @@ exports.getTasks = async (req, res) => {
             ];
         }
 
-        // Search in title and description
+        // Search in title, description, and subcategory
         if (search) {
             query.$or = [
                 { title: { $regex: search, $options: 'i' } },
-                { description: { $regex: search, $options: 'i' } }
+                { description: { $regex: search, $options: 'i' } },
+                { subcategory: { $regex: search, $options: 'i' } }
             ];
         }
 
@@ -163,6 +174,9 @@ exports.getTasks = async (req, res) => {
                     break;
                 case 'title':
                     sortOptions = { title: 1 };
+                    break;
+                case 'category':
+                    sortOptions = { category: 1, subcategory: 1, createdAt: -1 };
                     break;
             }
         }
@@ -243,11 +257,133 @@ exports.getTaskById = async (req, res) => {
     }
 };
 
+
+// Update the getTasks function to include subcategory in filters
+exports.getTasks = async (req, res) => {
+    try {
+        const {
+            status, priority, category, subcategory, assignee, creator,
+            search, sortBy, page = 1, limit = 20,
+            includeArchived = false, myTasks = false
+        } = req.query;
+
+        // Build query
+        const query = { organization: req.organization._id };
+
+        // Apply filters
+        if (status) query.status = status;
+        if (priority) query.priority = priority;
+        if (category) query.category = category;
+        if (subcategory) query.subcategory = subcategory;
+        if (assignee) query.assignee = assignee;
+        if (creator) query.creator = creator;
+        if (!includeArchived || includeArchived === 'false') query.isArchived = false;
+        
+        // My tasks filter
+        if (myTasks === 'true') {
+            query.$or = [
+                { assignee: req.user._id },
+                { creator: req.user._id },
+                { watchers: req.user._id }
+            ];
+        }
+
+        // Search in title, description, and subcategory
+        if (search) {
+            query.$or = [
+                { title: { $regex: search, $options: 'i' } },
+                { description: { $regex: search, $options: 'i' } },
+                { subcategory: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        // Sorting
+        let sortOptions = { createdAt: -1 }; // Default sort
+        if (sortBy) {
+            switch (sortBy) {
+                case 'dueDate':
+                    sortOptions = { dueDate: 1 };
+                    break;
+                case 'priority':
+                    sortOptions = { priority: -1, createdAt: -1 };
+                    break;
+                case 'status':
+                    sortOptions = { status: 1, createdAt: -1 };
+                    break;
+                case 'title':
+                    sortOptions = { title: 1 };
+                    break;
+                case 'category':
+                    sortOptions = { category: 1, subcategory: 1, createdAt: -1 };
+                    break;
+            }
+        }
+
+        // Pagination
+        const pageNum = parseInt(page, 10);
+        const limitNum = parseInt(limit, 10);
+        const skip = (pageNum - 1) * limitNum;
+
+        // Execute query
+        const [tasks, totalCount] = await Promise.all([
+            Task.find(query)
+                .sort(sortOptions)
+                .limit(limitNum)
+                .skip(skip)
+                .populate('assignee', 'name email')
+                .populate('creator', 'name email')
+                .populate('parentTask', 'title'),
+            Task.countDocuments(query)
+        ]);
+
+        res.json({
+            tasks,
+            pagination: {
+                currentPage: pageNum,
+                totalPages: Math.ceil(totalCount / limitNum),
+                totalTasks: totalCount,
+                hasMore: skip + tasks.length < totalCount
+            }
+        });
+
+    } catch (err) {
+        console.error('Error fetching tasks:', err.message, err.stack);
+        res.status(500).send('Server Error: Could not fetch tasks');
+    }
+};
+
+// Add a new endpoint to get available subcategories
+exports.getSubcategories = async (req, res) => {
+    try {
+        const { category } = req.query;
+        
+        if (!category) {
+            return res.status(400).json({ msg: 'Category parameter is required' });
+        }
+
+        const subcategories = await Task.getSubcategoriesForOrganization(
+            req.organization._id, 
+            category
+        );
+
+        res.json({ 
+            category,
+            subcategories,
+            count: subcategories.length
+        });
+
+    } catch (err) {
+        console.error('Error fetching subcategories:', err.message, err.stack);
+        res.status(500).send('Server Error: Could not fetch subcategories');
+    }
+};
+
 /**
  * @desc    Update a task
  * @route   PUT /api/horizon/tasks/:id
  * @access  Private
  */
+// Update the updateTask function to handle subcategory
 exports.updateTask = async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -275,11 +411,17 @@ exports.updateTask = async (req, res) => {
         }
 
         const {
-            title, description, category, tags, priority,
+            title, description, category, subcategory, tags, priority,
             status, assignee, dueDate, startDate,
             estimatedHours, actualHours, progress,
-            blockedBy, attachments
+            blockedBy, attachments, customFields
         } = req.body;
+
+        // Handle subcategory from customFields if provided
+        let finalSubcategory = subcategory;
+        if (finalSubcategory === undefined && customFields?.subcategory !== undefined) {
+            finalSubcategory = customFields.subcategory;
+        }
 
         // Track changes for system comments
         const changes = [];
@@ -311,6 +453,7 @@ exports.updateTask = async (req, res) => {
         if (title !== undefined) task.title = title;
         if (description !== undefined) task.description = description;
         if (category !== undefined) task.category = category;
+        if (finalSubcategory !== undefined) task.subcategory = finalSubcategory;
         if (tags !== undefined) task.tags = tags;
         if (priority !== undefined) task.priority = priority;
         if (status !== undefined) task.status = status;
@@ -322,6 +465,7 @@ exports.updateTask = async (req, res) => {
         if (progress !== undefined) task.progress = progress;
         if (blockedBy !== undefined) task.blockedBy = blockedBy;
         if (attachments !== undefined) task.attachments = attachments;
+        if (customFields !== undefined) task.customFields = customFields;
 
         await task.save({ session });
 
@@ -359,6 +503,7 @@ exports.updateTask = async (req, res) => {
         session.endSession();
     }
 };
+
 
 /**
  * @desc    Archive/Delete a task
@@ -715,6 +860,7 @@ exports.getTaskStats = async (req, res) => {
             statusStats,
             priorityStats,
             categoryStats,
+            subcategoryStats,
             assigneeStats,
             overdueCount
         ] = await Promise.all([
@@ -737,6 +883,20 @@ exports.getTaskStats = async (req, res) => {
                 { $match: matchStage },
                 { $group: { _id: '$category', count: { $sum: 1 } } },
                 { $sort: { count: -1 } }
+            ]),
+            
+            // Subcategory distribution
+            Task.aggregate([
+                { $match: { ...matchStage, subcategory: { $ne: null, $ne: '' } } },
+                { $group: { 
+                    _id: { 
+                        category: '$category', 
+                        subcategory: '$subcategory' 
+                    }, 
+                    count: { $sum: 1 } 
+                } },
+                { $sort: { count: -1 } },
+                { $limit: 10 }
             ]),
             
             // Tasks per assignee
@@ -770,6 +930,7 @@ exports.getTaskStats = async (req, res) => {
             statusDistribution: statusStats,
             priorityDistribution: priorityStats,
             categoryDistribution: categoryStats,
+            subcategoryDistribution: subcategoryStats,
             tasksByAssignee: assigneeStats,
             overdueCount,
             totalTasks: statusStats.reduce((sum, stat) => sum + stat.count, 0)

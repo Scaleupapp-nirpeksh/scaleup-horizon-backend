@@ -1,4 +1,4 @@
-// models/taskModel.js
+// Updated taskModel.js with subcategory support
 const mongoose = require('mongoose');
 
 const taskSchema = new mongoose.Schema(
@@ -34,6 +34,12 @@ const taskSchema = new mongoose.Schema(
             type: String,
             enum: ['development', 'marketing', 'sales', 'operations', 'finance', 'hr', 'design', 'other'],
             default: 'other',
+        },
+        subcategory: {
+            type: String,
+            trim: true,
+            maxlength: [100, 'Subcategory cannot exceed 100 characters'],
+            default: null,
         },
         tags: [{
             type: String,
@@ -151,6 +157,9 @@ const taskSchema = new mongoose.Schema(
     {
         timestamps: true,
         collection: 'tasks',
+        // Include virtuals when converting to JSON
+        toJSON: { virtuals: true },
+        toObject: { virtuals: true }
     }
 );
 
@@ -159,6 +168,7 @@ taskSchema.index({ organization: 1, status: 1, priority: 1 });
 taskSchema.index({ organization: 1, assignee: 1, status: 1 });
 taskSchema.index({ organization: 1, dueDate: 1, status: 1 });
 taskSchema.index({ organization: 1, category: 1 });
+taskSchema.index({ organization: 1, category: 1, subcategory: 1 });
 taskSchema.index({ organization: 1, createdAt: -1 });
 
 // Virtual for checking if task is overdue
@@ -166,6 +176,14 @@ taskSchema.virtual('isOverdue').get(function() {
     return this.dueDate && 
            this.dueDate < new Date() && 
            !['completed', 'cancelled'].includes(this.status);
+});
+
+// Virtual for display category (category + subcategory)
+taskSchema.virtual('displayCategory').get(function() {
+    if (this.subcategory) {
+        return `${this.category} / ${this.subcategory}`;
+    }
+    return this.category;
 });
 
 // Pre-save hook to update lastActivityAt
@@ -193,6 +211,16 @@ taskSchema.methods.canUserModify = function(userId, userRole) {
         (this.assignee && this.assignee.equals(userId)) ||
         userRole === 'owner'
     );
+};
+
+// Static method to get available subcategories for an organization
+taskSchema.statics.getSubcategoriesForOrganization = async function(organizationId, category) {
+    const subcategories = await this.distinct('subcategory', {
+        organization: organizationId,
+        category: category,
+        subcategory: { $ne: null, $ne: '' }
+    });
+    return subcategories.sort();
 };
 
 const Task = mongoose.model('Task', taskSchema);

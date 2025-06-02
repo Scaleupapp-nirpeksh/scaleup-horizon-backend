@@ -1,4 +1,4 @@
-// routes/taskRoutes.js
+// Updated taskRoutes.js with subcategories endpoint
 const express = require('express');
 const router = express.Router();
 const {
@@ -18,6 +18,12 @@ router.use(requireActiveOrganization);
 router.get('/stats', 
     authorizeOrganizationRole(['owner', 'member']), 
     taskController.getTaskStats
+);
+
+// Get available subcategories for a category
+router.get('/subcategories', 
+    authorizeOrganizationRole(['owner', 'member']), 
+    taskController.getSubcategories
 );
 
 // Create a new task
