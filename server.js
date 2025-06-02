@@ -16,6 +16,7 @@ const kpiRoutes = require('./routes/kpiRoutes');
 const advancedFeaturesRoutes = require('./routes/advancedFeaturesRoutes');
 const predictiveAnalyticsRoutes = require('./routes/predictiveAnalyticsRoutes');
 const investorReportRoutes = require('./routes/investorReportRoutes');
+const taskRoutes = require('./routes/taskRoutes');
 // Import new enhanced routes
 const enhancedRoutes = require('./routes/enhancedRoutes');
 const headcountRoutes = require('./routes/headcountRoutes');
@@ -58,6 +59,7 @@ app.use('/api/horizon/headcount', headcountRoutes);
 app.use('/api/horizon/product-milestones', productMilestoneRoutes);
 app.use('/api/horizon/investor-meetings', investorMeetingRoutes);
 app.use('/api/horizon/organizations', organizationRoutes);
+app.use('/api/horizon/tasks', taskRoutes); 
 
 // New enhanced features routes
 app.use('/api/horizon/enhanced', enhancedRoutes);
@@ -262,6 +264,58 @@ function setupCronJobs() {
             console.log('Anomaly detection completed');
         } catch (error) {
             console.error('Error in anomaly detection:', error);
+        }
+    });
+
+    // Task reminder notifications (every day at 8 AM)
+    cron.schedule('0 8 * * *', async () => {
+        console.log('Running daily task reminder check...');
+        try {
+            const Task = require('./models/taskModel');
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            tomorrow.setHours(23, 59, 59, 999);
+            
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            
+            // Find tasks due today or tomorrow
+            const upcomingTasks = await Task.find({
+                dueDate: {
+                    $gte: today,
+                    $lte: tomorrow
+                },
+                status: { $nin: ['completed', 'cancelled'] },
+                assignee: { $exists: true, $ne: null }
+            }).populate('assignee', 'email name')
+              .populate('organization', 'name');
+            
+            // In production, you would send email notifications here
+            console.log(`Found ${upcomingTasks.length} tasks with upcoming due dates`);
+            
+            // Group by assignee for batch notifications
+            const tasksByAssignee = {};
+            upcomingTasks.forEach(task => {
+                const assigneeId = task.assignee._id.toString();
+                if (!tasksByAssignee[assigneeId]) {
+                    tasksByAssignee[assigneeId] = {
+                        assignee: task.assignee,
+                        tasks: []
+                    };
+                }
+                tasksByAssignee[assigneeId].tasks.push(task);
+            });
+            
+            // Send notifications (implement your notification service)
+            for (const assigneeId in tasksByAssignee) {
+                const { assignee, tasks } = tasksByAssignee[assigneeId];
+                console.log(`Reminder: ${assignee.name} has ${tasks.length} upcoming tasks`);
+                // await notificationService.sendTaskReminder(assignee, tasks);
+            }
+            
+            console.log('Daily task reminder check completed');
+        } catch (error) {
+            console.error('Error in task reminder check:', error);
         }
     });
 
