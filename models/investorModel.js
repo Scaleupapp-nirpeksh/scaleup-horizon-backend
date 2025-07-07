@@ -1,4 +1,4 @@
-// models/investorModel.js - COMPLETE FIXED VERSION
+// models/investorModel.js - COMPLETE FIXED VERSION WITH NULL SAFETY
 const mongoose = require('mongoose');
 
 // Enhanced trancheSchema - With calculation capabilities
@@ -96,7 +96,7 @@ const investorSchema = new mongoose.Schema({
     totalCommittedAmount: { type: Number, default: 0, min: 0 },
     totalReceivedAmount: { type: Number, default: 0, min: 0 },
     roundId: { type: mongoose.Schema.Types.ObjectId, ref: 'Round', required: true, index: true },
-    tranches: [trancheSchema],
+    tranches: { type: [trancheSchema], default: [] }, // ✅ FIX: Ensure default empty array
     status: {
         type: String,
         enum: ['Lead', 'Contacted', 'Introduced', 'Pitched', 'Follow-up', 'Negotiating', 'Soft Committed', 'Hard Committed', 'Invested', 'Declined', 'Passed', 'On Hold'],
@@ -235,14 +235,24 @@ const investorSchema = new mongoose.Schema({
     collection: 'investors',
 });
 
-// --- ENHANCED PRE-SAVE MIDDLEWARE ---
+// ✅ FIX: Helper function to safely access tranches
+function safeTranches(tranches) {
+    return Array.isArray(tranches) ? tranches : [];
+}
+
+// --- ENHANCED PRE-SAVE MIDDLEWARE WITH NULL SAFETY ---
 investorSchema.pre('save', function(next) {
     try {
+        // ✅ FIX: Ensure tranches is always an array
+        if (!Array.isArray(this.tranches)) {
+            this.tranches = [];
+        }
+        
         // ✅ FIX: Ensure totalReceivedAmount is always calculated from tranches
-        this.totalReceivedAmount = this.tranches.reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
+        this.totalReceivedAmount = safeTranches(this.tranches).reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
         
         // ✅ FIX: Ensure sharesReceived is always calculated from tranches
-        this.sharesReceived = this.tranches.reduce((sum, t) => sum + (t.sharesAllocated || 0), 0);
+        this.sharesReceived = safeTranches(this.tranches).reduce((sum, t) => sum + (t.sharesAllocated || 0), 0);
         
         // ✅ FIX: Recalculate average share price if we have shares
         if (this.sharesReceived > 0 && this.totalReceivedAmount > 0) {
@@ -255,17 +265,17 @@ investorSchema.pre('save', function(next) {
         }
         
         // Count completed tranches
-        this.investmentProgress.tranchesCompleted = this.tranches.filter(t => t.status === 'Fully Received').length;
-        this.investmentProgress.totalTranches = this.tranches.length;
+        this.investmentProgress.tranchesCompleted = safeTranches(this.tranches).filter(t => t.status === 'Fully Received').length;
+        this.investmentProgress.totalTranches = safeTranches(this.tranches).length;
         
         // Find last payment date
-        const receivedTranches = this.tranches.filter(t => t.dateReceived);
+        const receivedTranches = safeTranches(this.tranches).filter(t => t.dateReceived);
         if (receivedTranches.length > 0) {
             this.investmentProgress.lastPaymentDate = new Date(Math.max(...receivedTranches.map(t => new Date(t.dateReceived))));
         }
         
         // Calculate next expected payment
-        const pendingTranches = this.tranches.filter(t => t.status === 'Pending').sort((a, b) => a.trancheNumber - b.trancheNumber);
+        const pendingTranches = safeTranches(this.tranches).filter(t => t.status === 'Pending').sort((a, b) => a.trancheNumber - b.trancheNumber);
         if (pendingTranches.length > 0) {
             this.investmentProgress.nextExpectedPayment.amount = pendingTranches[0].agreedAmount;
         }
@@ -361,6 +371,11 @@ investorSchema.methods.calculateEquityAllocation = async function() {
  * ✅ FIX: Calculate shares immediately and update investor totals
  */
 investorSchema.methods.processTranchePayment = async function(trancheId, amountReceived, paymentDetails = {}) {
+    // ✅ FIX: Ensure tranches is an array
+    if (!Array.isArray(this.tranches)) {
+        this.tranches = [];
+    }
+    
     const tranche = this.tranches.id(trancheId);
     if (!tranche) {
         throw new Error('Tranche not found');
@@ -412,8 +427,8 @@ investorSchema.methods.processTranchePayment = async function(trancheId, amountR
         (sharesPurchased / round.totalSharesOutstanding) * 100 : 0;
     
     // ✅ FIX: Update investor totals BEFORE saving
-    this.totalReceivedAmount = this.tranches.reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
-    this.sharesReceived = this.tranches.reduce((sum, t) => sum + (t.sharesAllocated || 0), 0);
+    this.totalReceivedAmount = safeTranches(this.tranches).reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
+    this.sharesReceived = safeTranches(this.tranches).reduce((sum, t) => sum + (t.sharesAllocated || 0), 0);
     
     // Calculate weighted average share price
     if (this.sharesReceived > 0) {
@@ -488,7 +503,7 @@ investorSchema.methods.createCapTableEntry = async function() {
         capTableEntry.equityPercentage = this.equityPercentageAllocated;
         
         // Update issue date to latest payment date
-        const latestPaymentDate = this.tranches
+        const latestPaymentDate = safeTranches(this.tranches)
             .filter(t => t.dateReceived)
             .sort((a, b) => new Date(b.dateReceived) - new Date(a.dateReceived))[0]?.dateReceived;
         
@@ -504,7 +519,7 @@ investorSchema.methods.createCapTableEntry = async function() {
         console.log(`[CAP TABLE] Creating new entry for ${this.name}`);
         
         // Get the latest payment date for issue date
-        const latestPaymentDate = this.tranches
+        const latestPaymentDate = safeTranches(this.tranches)
             .filter(t => t.dateReceived)
             .sort((a, b) => new Date(b.dateReceived) - new Date(a.dateReceived))[0]?.dateReceived || new Date();
         
@@ -524,7 +539,7 @@ investorSchema.methods.createCapTableEntry = async function() {
             issueDate: latestPaymentDate,
             grantDate: latestPaymentDate,
             currency: this.currency || 'INR',
-            notes: `${this.investmentVehicle} investment - ${this.tranches.length} tranche(s)`,
+            notes: `${this.investmentVehicle} investment - ${safeTranches(this.tranches).length} tranche(s)`,
             status: 'Active'
         });
         
@@ -536,20 +551,23 @@ investorSchema.methods.createCapTableEntry = async function() {
 };
 
 /**
- * Get comprehensive investment summary - ENHANCED VERSION
+ * Get comprehensive investment summary - ENHANCED VERSION WITH NULL SAFETY
  * ✅ FIX: More detailed and accurate reporting
  */
 investorSchema.methods.getInvestmentSummary = function() {
-    const totalTranches = this.tranches.length;
-    const fullyReceivedTranches = this.tranches.filter(t => t.status === 'Fully Received').length;
-    const pendingTranches = this.tranches.filter(t => t.status === 'Pending').length;
-    const partialTranches = this.tranches.filter(t => t.status === 'Partially Received').length;
+    // ✅ FIX: Ensure tranches is always an array
+    const tranches = safeTranches(this.tranches);
     
-    const totalAgreed = this.tranches.reduce((sum, t) => sum + (t.agreedAmount || 0), 0);
-    const totalReceived = this.tranches.reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
+    const totalTranches = tranches.length;
+    const fullyReceivedTranches = tranches.filter(t => t.status === 'Fully Received').length;
+    const pendingTranches = tranches.filter(t => t.status === 'Pending').length;
+    const partialTranches = tranches.filter(t => t.status === 'Partially Received').length;
+    
+    const totalAgreed = tranches.reduce((sum, t) => sum + (t.agreedAmount || 0), 0);
+    const totalReceived = tranches.reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
     const totalPending = totalAgreed - totalReceived;
     
-    const totalSharesFromTranches = this.tranches.reduce((sum, t) => sum + (t.sharesAllocated || 0), 0);
+    const totalSharesFromTranches = tranches.reduce((sum, t) => sum + (t.sharesAllocated || 0), 0);
     
     // Calculate progress percentages
     const paymentProgress = totalAgreed > 0 ? (totalReceived / totalAgreed) * 100 : 0;
@@ -585,12 +603,12 @@ investorSchema.methods.getInvestmentSummary = function() {
         currentValue: totalReceived, // During round, current value = amount invested
         
         // Recent Activity
-        lastPaymentDate: this.tranches
+        lastPaymentDate: tranches
             .filter(t => t.dateReceived)
             .sort((a, b) => new Date(b.dateReceived) - new Date(a.dateReceived))[0]?.dateReceived,
         
         // Next Actions
-        nextTranchesDue: this.tranches
+        nextTranchesDue: tranches
             .filter(t => t.status === 'Pending' && t.agreedAmount > 0)
             .sort((a, b) => a.trancheNumber - b.trancheNumber)
             .slice(0, 3)
@@ -697,14 +715,14 @@ investorSchema.index({ organization: 1, lastCalculatedAt: -1 });
 investorSchema.index({ organization: 1, 'conversionDetails.isConverted': 1 });
 investorSchema.index({ roundId: 1, status: 1 });
 
-// --- VIRTUAL FIELDS ---
+// --- VIRTUAL FIELDS WITH NULL SAFETY ---
 investorSchema.virtual('isFullyInvested').get(function() {
-    const totalReceived = this.tranches.reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
+    const totalReceived = safeTranches(this.tranches).reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
     return totalReceived >= (this.totalCommittedAmount || 0);
 });
 
 investorSchema.virtual('remainingCommitment').get(function() {
-    const totalReceived = this.tranches.reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
+    const totalReceived = safeTranches(this.tranches).reduce((sum, t) => sum + (t.receivedAmount || 0), 0);
     return Math.max(0, (this.totalCommittedAmount || 0) - totalReceived);
 });
 
@@ -713,7 +731,7 @@ investorSchema.virtual('isConvertibleInstrument').get(function() {
 });
 
 investorSchema.virtual('pendingTranches').get(function() {
-    return this.tranches.filter(t => t.status === 'Pending' || t.status === 'Partially Received');
+    return safeTranches(this.tranches).filter(t => t.status === 'Pending' || t.status === 'Partially Received');
 });
 
 // Ensure virtual fields are included in JSON output
