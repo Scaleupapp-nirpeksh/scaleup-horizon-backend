@@ -133,13 +133,7 @@ async function startServer() {
 ║     Port: ${PORT}                                    ║
 ║     Environment: ${process.env.NODE_ENV || 'development'}              ║
 ║                                                    ║
-║     Enhanced Features:                             ║
-║     ✅ ML Transaction Categorization               ║
-║     ✅ Bank Statement Import & Sync                ║
-║     ✅ Custom KPI Builder                          ║
-║     ✅ Recurring Transactions                      ║
-║     ✅ Automated Report Generation                 ║
-║     ✅ Advanced ML Analytics                       ║
+║                    ║
 ║                                                    ║
 ╚════════════════════════════════════════════════════╝
             `);
