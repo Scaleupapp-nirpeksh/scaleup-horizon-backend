@@ -1,5 +1,7 @@
 // Updated taskModel.js with subcategory support
 const mongoose = require('mongoose');
+// Ensure the counter model is registered before the key-assignment hook runs
+require('./taskCounterModel');
 
 const taskSchema = new mongoose.Schema(
     {
@@ -16,6 +18,21 @@ const taskSchema = new mongoose.Schema(
             required: [true, 'Task creator is required'],
         },
         
+        // Human-readable per-org identifier (e.g. SLT-42), assigned on create
+        taskKey: {
+            type: String,
+            trim: true,
+            index: true,
+        },
+
+        // Epic/task distinction (epics group child tasks via parentTask)
+        taskType: {
+            type: String,
+            enum: ['epic', 'task'],
+            default: 'task',
+            index: true,
+        },
+
         // Basic task information
         title: {
             type: String,
@@ -164,6 +181,13 @@ const taskSchema = new mongoose.Schema(
 );
 
 // Indexes for better query performance
+// Task keys are unique per org (partial: pre-existing tasks may not have one yet)
+taskSchema.index(
+    { organization: 1, taskKey: 1 },
+    { unique: true, partialFilterExpression: { taskKey: { $type: 'string' } } }
+);
+taskSchema.index({ organization: 1, taskType: 1, isArchived: 1 });
+taskSchema.index({ organization: 1, parentTask: 1 });
 taskSchema.index({ organization: 1, status: 1, priority: 1 });
 taskSchema.index({ organization: 1, assignee: 1, status: 1 });
 taskSchema.index({ organization: 1, dueDate: 1, status: 1 });
@@ -184,6 +208,36 @@ taskSchema.virtual('displayCategory').get(function() {
         return `${this.category} / ${this.subcategory}`;
     }
     return this.category;
+});
+
+// Assign a human-readable task key (e.g. SLT-42) on first save.
+// Uses a per-org counter; the prefix is derived from the org name once.
+taskSchema.pre('save', async function(next) {
+    if (!this.isNew || this.taskKey) return next();
+    try {
+        const TaskCounter = mongoose.model('TaskCounter');
+        let counter = await TaskCounter.findOneAndUpdate(
+            { organization: this.organization },
+            { $inc: { seq: 1 } },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        if (!counter.prefix) {
+            const Organization = mongoose.model('Organization');
+            const org = await Organization.findById(this.organization).select('name');
+            const prefix = TaskCounter.derivePrefix(org && org.name);
+            await TaskCounter.updateOne(
+                { _id: counter._id, prefix: { $in: [null, ''] } },
+                { $set: { prefix } }
+            );
+            counter = await TaskCounter.findById(counter._id);
+        }
+        this.taskKey = `${counter.prefix}-${counter.seq}`;
+        next();
+    } catch (err) {
+        // A task without a key is better than a failed save
+        console.error('Could not assign task key:', err.message);
+        next();
+    }
 });
 
 // Pre-save hook to update lastActivityAt

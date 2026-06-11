@@ -70,6 +70,20 @@ router.post('/:id/watchers',
     taskController.updateWatchers
 );
 
+// --- Task Link Routes (JIRA-style relations) ---
+
+// Link this task to another task
+router.post('/:id/links',
+    authorizeOrganizationRole(['owner', 'member']),
+    taskController.addTaskLink
+);
+
+// Remove a link
+router.delete('/:id/links/:linkId',
+    authorizeOrganizationRole(['owner', 'member']),
+    taskController.deleteTaskLink
+);
+
 // --- Task Comment Routes ---
 
 // Get comments for a task

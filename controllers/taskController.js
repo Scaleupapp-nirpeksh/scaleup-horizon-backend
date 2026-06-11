@@ -2,6 +2,7 @@
 const mongoose = require('mongoose');
 const Task = require('../models/taskModel');
 const TaskComment = require('../models/taskCommentModel');
+const TaskLink = require('../models/taskLinkModel');
 const Membership = require('../models/membershipModel');
 const HorizonUser = require('../models/userModel');
 
@@ -51,7 +52,8 @@ exports.createTask = async (req, res) => {
         const {
             title, description, category, subcategory, tags, priority,
             assignee, dueDate, startDate, estimatedHours,
-            parentTask, blockedBy, attachments, customFields
+            parentTask, blockedBy, attachments, customFields,
+            taskType, watchers
         } = req.body;
 
         // Validate required fields
@@ -96,10 +98,17 @@ exports.createTask = async (req, res) => {
             }
         }
 
+        // Creator automatically watches the task; extra watchers may be passed
+        const watcherSet = new Set([String(req.user._id)]);
+        if (Array.isArray(watchers)) {
+            watchers.filter(w => mongoose.Types.ObjectId.isValid(w)).forEach(w => watcherSet.add(String(w)));
+        }
+
         // Create the task
         const newTask = new Task({
             organization: req.organization._id,
             creator: req.user._id,
+            taskType: taskType === 'epic' ? 'epic' : 'task',
             title,
             description,
             category,
@@ -114,7 +123,7 @@ exports.createTask = async (req, res) => {
             blockedBy,
             attachments,
             customFields,
-            watchers: [req.user._id] // Creator automatically watches the task
+            watchers: [...watcherSet]
         });
 
         const task = await newTask.save({ session });
@@ -173,7 +182,8 @@ exports.getTasks = async (req, res) => {
         const {
             status, priority, category, subcategory, assignee, creator,
             search, sortBy, page = 1, limit = 20,
-            includeArchived = false, myTasks = false
+            includeArchived = false, myTasks = false,
+            taskType, parentTask
         } = req.query;
 
         // Build query
@@ -184,6 +194,17 @@ exports.getTasks = async (req, res) => {
         if (priority) query.priority = priority;
         if (category) query.category = category;
         if (subcategory) query.subcategory = subcategory;
+        if (taskType && ['epic', 'task'].includes(taskType)) query.taskType = taskType;
+        if (parentTask) {
+            if (parentTask === 'none') {
+                query.parentTask = null;
+            } else {
+                if (!mongoose.Types.ObjectId.isValid(parentTask)) {
+                    return res.status(400).json({ msg: 'Invalid parent task ID format' });
+                }
+                query.parentTask = new mongoose.Types.ObjectId(String(parentTask));
+            }
+        }
         // Cast IDs explicitly — the aggregation path below does not auto-cast like find()
         if (assignee) {
             if (!mongoose.Types.ObjectId.isValid(assignee)) {
@@ -213,14 +234,15 @@ exports.getTasks = async (req, res) => {
             });
         }
 
-        // Search in title, description, and subcategory (escaped to prevent regex injection)
+        // Search in title, description, subcategory and task key (escaped to prevent regex injection)
         if (search) {
             const safeSearch = escapeRegex(search);
             andConditions.push({
                 $or: [
                     { title: { $regex: safeSearch, $options: 'i' } },
                     { description: { $regex: safeSearch, $options: 'i' } },
-                    { subcategory: { $regex: safeSearch, $options: 'i' } }
+                    { subcategory: { $regex: safeSearch, $options: 'i' } },
+                    { taskKey: { $regex: safeSearch, $options: 'i' } }
                 ]
             });
         }
@@ -349,15 +371,49 @@ exports.getTaskById = async (req, res) => {
             return res.status(404).json({ msg: 'Task not found in your organization' });
         }
 
-        // Get comments count
-        const commentsCount = await TaskComment.countDocuments({
-            task: task._id,
-            isDeleted: false
-        });
+        // Comments count, child progress rollup, and JIRA-style links in parallel
+        const [commentsCount, children, links] = await Promise.all([
+            TaskComment.countDocuments({ task: task._id, isDeleted: false }),
+            Task.find({
+                parentTask: task._id,
+                organization: req.organization._id,
+                isArchived: false
+            }).select('title status taskKey taskType priority dueDate assignee')
+              .populate('assignee', 'name'),
+            TaskLink.find({
+                organization: req.organization._id,
+                $or: [{ sourceTask: task._id }, { targetTask: task._id }]
+            }).populate('sourceTask', 'title status taskKey taskType')
+              .populate('targetTask', 'title status taskKey taskType')
+        ]);
+
+        const childStats = {
+            total: children.length,
+            completed: children.filter(c => c.status === 'completed').length,
+            inProgress: children.filter(c => c.status === 'in_progress').length,
+        };
+        childStats.percentComplete = childStats.total > 0
+            ? Math.round((childStats.completed / childStats.total) * 100)
+            : 0;
+
+        // Present each link from this task's perspective
+        const presentedLinks = links
+            .filter(l => l.sourceTask && l.targetTask) // skip links to deleted tasks
+            .map(l => {
+                const outgoing = String(l.sourceTask._id) === String(task._id);
+                return {
+                    _id: l._id,
+                    linkType: outgoing ? l.linkType : (TaskLink.INVERSE_LABELS[l.linkType] || l.linkType),
+                    task: outgoing ? l.targetTask : l.sourceTask,
+                };
+            });
 
         res.json({
             task,
-            commentsCount
+            commentsCount,
+            children,
+            childStats,
+            links: presentedLinks
         });
 
     } catch (err) {
@@ -429,7 +485,8 @@ exports.updateTask = async (req, res) => {
             title, description, category, subcategory, tags, priority,
             status, assignee, dueDate, startDate,
             estimatedHours, actualHours, progress,
-            blockedBy, attachments, customFields
+            blockedBy, attachments, customFields,
+            taskType, parentTask
         } = req.body;
 
         // Handle subcategory from customFields if provided
@@ -478,6 +535,30 @@ exports.updateTask = async (req, res) => {
             }
         }
 
+        // Re-parenting: validate the new parent and keep subtasks arrays in sync
+        const parentChanged = parentTask !== undefined &&
+            String(parentTask || '') !== String(task.parentTask || '');
+        if (parentChanged && parentTask) {
+            const parentCheck = await verifyTasksBelongToOrganization(parentTask, req.organization._id, session);
+            if (!parentCheck.valid) {
+                await session.abortTransaction();
+                return res.status(400).json({ msg: 'Parent task not found in your organization' });
+            }
+            // Walk the new parent's ancestor chain to prevent cycles
+            let ancestorId = parentTask;
+            for (let depth = 0; ancestorId && depth < 50; depth++) {
+                if (String(ancestorId) === String(task._id)) {
+                    await session.abortTransaction();
+                    return res.status(400).json({ msg: 'Cannot set parent: this would create a circular hierarchy' });
+                }
+                const ancestor = await Task.findOne({
+                    _id: ancestorId,
+                    organization: req.organization._id
+                }).select('parentTask').session(session);
+                ancestorId = ancestor ? ancestor.parentTask : null;
+            }
+        }
+
         // Update fields
         if (title !== undefined) task.title = title;
         if (description !== undefined) task.description = description;
@@ -495,6 +576,26 @@ exports.updateTask = async (req, res) => {
         if (blockedBy !== undefined) task.blockedBy = blockedBy;
         if (attachments !== undefined) task.attachments = attachments;
         if (customFields !== undefined) task.customFields = customFields;
+        if (taskType !== undefined && ['epic', 'task'].includes(taskType)) task.taskType = taskType;
+
+        if (parentChanged) {
+            // Detach from the old parent's subtasks, attach to the new one
+            if (task.parentTask) {
+                await Task.updateOne(
+                    { _id: task.parentTask, organization: req.organization._id },
+                    { $pull: { subtasks: task._id } },
+                    { session }
+                );
+            }
+            if (parentTask) {
+                await Task.updateOne(
+                    { _id: parentTask, organization: req.organization._id },
+                    { $addToSet: { subtasks: task._id } },
+                    { session }
+                );
+            }
+            task.parentTask = parentTask || null;
+        }
 
         await task.save({ session });
 
@@ -888,6 +989,98 @@ exports.updateWatchers = async (req, res) => {
     } catch (err) {
         console.error('Error updating watchers:', err.message, err.stack);
         res.status(500).send('Server Error: Could not update watchers');
+    }
+};
+
+// --- Task Links (JIRA-style relations) ---
+
+/**
+ * @desc    Link this task to another (blocks / relates_to / duplicates)
+ * @route   POST /api/horizon/tasks/:id/links
+ * @access  Private
+ */
+exports.addTaskLink = async (req, res) => {
+    try {
+        const { targetTaskId, linkType } = req.body;
+
+        if (!mongoose.Types.ObjectId.isValid(req.params.id) ||
+            !mongoose.Types.ObjectId.isValid(targetTaskId || '')) {
+            return res.status(400).json({ msg: 'Invalid task ID format' });
+        }
+        if (!TaskLink.LINK_TYPES.includes(linkType)) {
+            return res.status(400).json({ msg: `Invalid link type. Use one of: ${TaskLink.LINK_TYPES.join(', ')}` });
+        }
+        if (String(req.params.id) === String(targetTaskId)) {
+            return res.status(400).json({ msg: 'A task cannot be linked to itself' });
+        }
+
+        // Both tasks must exist within this organization
+        const orgCheck = await verifyTasksBelongToOrganization(
+            [req.params.id, targetTaskId], req.organization._id
+        );
+        if (!orgCheck.valid) {
+            return res.status(404).json({ msg: 'Task not found in your organization' });
+        }
+
+        // Reject duplicates in either direction for the same link type
+        const existing = await TaskLink.findOne({
+            organization: req.organization._id,
+            linkType,
+            $or: [
+                { sourceTask: req.params.id, targetTask: targetTaskId },
+                { sourceTask: targetTaskId, targetTask: req.params.id }
+            ]
+        });
+        if (existing) {
+            return res.status(400).json({ msg: 'These tasks are already linked with this link type' });
+        }
+
+        const link = await TaskLink.create({
+            organization: req.organization._id,
+            sourceTask: req.params.id,
+            targetTask: targetTaskId,
+            linkType,
+            createdBy: req.user._id
+        });
+
+        const populated = await TaskLink.findById(link._id)
+            .populate('sourceTask', 'title status taskKey taskType')
+            .populate('targetTask', 'title status taskKey taskType');
+
+        res.status(201).json({ msg: 'Tasks linked successfully', link: populated });
+
+    } catch (err) {
+        console.error('Error adding task link:', err.message, err.stack);
+        res.status(500).send('Server Error: Could not link tasks');
+    }
+};
+
+/**
+ * @desc    Remove a link between tasks
+ * @route   DELETE /api/horizon/tasks/:id/links/:linkId
+ * @access  Private
+ */
+exports.deleteTaskLink = async (req, res) => {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.linkId)) {
+            return res.status(400).json({ msg: 'Invalid link ID format' });
+        }
+
+        const link = await TaskLink.findOneAndDelete({
+            _id: req.params.linkId,
+            organization: req.organization._id,
+            $or: [{ sourceTask: req.params.id }, { targetTask: req.params.id }]
+        });
+
+        if (!link) {
+            return res.status(404).json({ msg: 'Link not found' });
+        }
+
+        res.json({ msg: 'Link removed successfully' });
+
+    } catch (err) {
+        console.error('Error deleting task link:', err.message, err.stack);
+        res.status(500).send('Server Error: Could not remove link');
     }
 };
 
