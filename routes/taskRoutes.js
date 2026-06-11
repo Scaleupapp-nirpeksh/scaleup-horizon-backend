@@ -26,9 +26,21 @@ router.get('/subcategories',
     taskController.getSubcategories
 );
 
+// Bulk update/archive tasks
+router.post('/bulk',
+    authorizeOrganizationRole(['owner', 'member']),
+    taskController.bulkUpdateTasks
+);
+
+// Import tasks from CSV (dry-run by default)
+router.post('/import',
+    authorizeOrganizationRole(['owner', 'member']),
+    taskController.importTasksCsv
+);
+
 // Create a new task
-router.post('/', 
-    authorizeOrganizationRole(['owner', 'member']), 
+router.post('/',
+    authorizeOrganizationRole(['owner', 'member']),
     taskController.createTask
 );
 

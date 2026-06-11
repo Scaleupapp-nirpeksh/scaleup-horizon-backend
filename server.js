@@ -87,7 +87,8 @@ app.use('/api/horizon/headcount', headcountRoutes);
 app.use('/api/horizon/product-milestones', productMilestoneRoutes);
 app.use('/api/horizon/investor-meetings', investorMeetingRoutes);
 app.use('/api/horizon/organizations', organizationRoutes);
-app.use('/api/horizon/tasks', taskRoutes); 
+app.use('/api/horizon/tasks', taskRoutes);
+app.use('/api/horizon/notifications', require('./routes/notificationRoutes'));
 
 // New enhanced features routes
 app.use('/api/horizon/enhanced', enhancedRoutes);
@@ -312,29 +313,40 @@ function setupCronJobs() {
             }).populate('assignee', 'email name')
               .populate('organization', 'name');
             
-            // In production, you would send email notifications here
             console.log(`Found ${upcomingTasks.length} tasks with upcoming due dates`);
-            
-            // Group by assignee for batch notifications
-            const tasksByAssignee = {};
+
+            // One digest per assignee per organization
+            const { notifyUsers } = require('./services/notificationService');
+            const digests = {};
             upcomingTasks.forEach(task => {
-                const assigneeId = task.assignee._id.toString();
-                if (!tasksByAssignee[assigneeId]) {
-                    tasksByAssignee[assigneeId] = {
-                        assignee: task.assignee,
+                const key = `${task.assignee._id}:${task.organization?._id || task.organization}`;
+                if (!digests[key]) {
+                    digests[key] = {
+                        assigneeId: task.assignee._id,
+                        organizationId: task.organization?._id || task.organization,
                         tasks: []
                     };
                 }
-                tasksByAssignee[assigneeId].tasks.push(task);
+                digests[key].tasks.push(task);
             });
-            
-            // Send notifications (implement your notification service)
-            for (const assigneeId in tasksByAssignee) {
-                const { assignee, tasks } = tasksByAssignee[assigneeId];
-                console.log(`Reminder: ${assignee.name} has ${tasks.length} upcoming tasks`);
-                // await notificationService.sendTaskReminder(assignee, tasks);
+
+            for (const key of Object.keys(digests)) {
+                const { assigneeId, organizationId, tasks } = digests[key];
+                const lines = tasks
+                    .slice(0, 10)
+                    .map(t => `• ${t.taskKey ? t.taskKey + ' ' : ''}${t.title} (due ${t.dueDate.toISOString().slice(0, 10)})`)
+                    .join('\n');
+                await notifyUsers({
+                    organizationId,
+                    recipientIds: [assigneeId],
+                    actorId: null,
+                    type: 'task_due',
+                    title: `${tasks.length} task${tasks.length === 1 ? '' : 's'} due today or tomorrow`,
+                    message: lines + (tasks.length > 10 ? `\n…and ${tasks.length - 10} more` : ''),
+                    taskId: tasks.length === 1 ? tasks[0]._id : null
+                });
             }
-            
+
             console.log('Daily task reminder check completed');
         } catch (error) {
             console.error('Error in task reminder check:', error);

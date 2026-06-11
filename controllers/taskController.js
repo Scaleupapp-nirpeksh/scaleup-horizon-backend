@@ -5,6 +5,7 @@ const TaskComment = require('../models/taskCommentModel');
 const TaskLink = require('../models/taskLinkModel');
 const Membership = require('../models/membershipModel');
 const HorizonUser = require('../models/userModel');
+const { notifyUsers } = require('../services/notificationService');
 
 // Escape user input before embedding it in a $regex query
 const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -149,11 +150,24 @@ exports.createTask = async (req, res) => {
 
         await session.commitTransaction();
 
+        // Notify the assignee (unless they created the task themselves)
+        if (assignee) {
+            notifyUsers({
+                organizationId: req.organization._id,
+                recipientIds: [assignee],
+                actorId: req.user._id,
+                type: 'task_assigned',
+                title: `${task.taskKey ? task.taskKey + ': ' : ''}You were assigned "${task.title}"`,
+                message: `${req.user.name || 'A teammate'} assigned this task to you.`,
+                taskId: task._id
+            });
+        }
+
         // Populate the response
         const populatedTask = await Task.findById(task._id)
             .populate('creator', 'name email')
             .populate('assignee', 'name email')
-            .populate('parentTask', 'title');
+            .populate('parentTask', 'title taskKey taskType');
 
         res.status(201).json({
             msg: 'Task created successfully',
@@ -312,7 +326,7 @@ exports.getTasks = async (req, res) => {
             tasks = await Task.populate(aggTasks, [
                 { path: 'assignee', select: 'name email' },
                 { path: 'creator', select: 'name email' },
-                { path: 'parentTask', select: 'title' }
+                { path: 'parentTask', select: 'title taskKey taskType' }
             ]);
             totalCount = count;
         } else {
@@ -323,7 +337,7 @@ exports.getTasks = async (req, res) => {
                     .skip(skip)
                     .populate('assignee', 'name email')
                     .populate('creator', 'name email')
-                    .populate('parentTask', 'title'),
+                    .populate('parentTask', 'title taskKey taskType'),
                 Task.countDocuments(query)
             ]);
         }
@@ -613,6 +627,20 @@ exports.updateTask = async (req, res) => {
 
         await session.commitTransaction();
 
+        // Notify a newly assigned user (after the transaction is committed)
+        if (assignee !== undefined && assignee &&
+            changes.some(c => c.field === 'assignment')) {
+            notifyUsers({
+                organizationId: req.organization._id,
+                recipientIds: [assignee],
+                actorId: req.user._id,
+                type: 'task_assigned',
+                title: `${task.taskKey ? task.taskKey + ': ' : ''}You were assigned "${task.title}"`,
+                message: `${req.user.name || 'A teammate'} assigned this task to you.`,
+                taskId: task._id
+            });
+        }
+
         const updatedTask = await Task.findById(task._id)
             .populate('assignee', 'name email')
             .populate('creator', 'name email');
@@ -753,6 +781,35 @@ exports.addTaskComment = async (req, res) => {
         // Update task's lastActivityAt
         task.lastActivityAt = Date.now();
         await task.save();
+
+        // Notify: mentioned users get a mention notification; the assignee
+        // and watchers get a comment notification (author always excluded)
+        const keyPrefix = task.taskKey ? task.taskKey + ': ' : '';
+        const mentionIds = (mentions || []).filter(m => mongoose.Types.ObjectId.isValid(m)).map(String);
+        if (mentionIds.length > 0) {
+            notifyUsers({
+                organizationId: req.organization._id,
+                recipientIds: mentionIds,
+                actorId: req.user._id,
+                type: 'comment_mention',
+                title: `${keyPrefix}${req.user.name || 'A teammate'} mentioned you on "${task.title}"`,
+                message: String(content).slice(0, 300),
+                taskId: task._id
+            });
+        }
+        const commentAudience = [task.assignee, ...(task.watchers || [])]
+            .filter(Boolean)
+            .map(String)
+            .filter(id => !mentionIds.includes(id));
+        notifyUsers({
+            organizationId: req.organization._id,
+            recipientIds: commentAudience,
+            actorId: req.user._id,
+            type: 'task_comment',
+            title: `${keyPrefix}New comment on "${task.title}"`,
+            message: `${req.user.name || 'A teammate'}: ${String(content).slice(0, 300)}`,
+            taskId: task._id
+        });
 
         const populatedComment = await TaskComment.findById(comment._id)
             .populate('author', 'name email')
@@ -921,6 +978,18 @@ exports.assignTask = async (req, res) => {
             req.user._id
         );
 
+        if (assigneeId) {
+            notifyUsers({
+                organizationId: req.organization._id,
+                recipientIds: [assigneeId],
+                actorId: req.user._id,
+                type: 'task_assigned',
+                title: `${task.taskKey ? task.taskKey + ': ' : ''}You were assigned "${task.title}"`,
+                message: `${req.user.name || 'A teammate'} assigned this task to you.`,
+                taskId: task._id
+            });
+        }
+
         const updatedTask = await Task.findById(task._id)
             .populate('assignee', 'name email');
 
@@ -989,6 +1058,373 @@ exports.updateWatchers = async (req, res) => {
     } catch (err) {
         console.error('Error updating watchers:', err.message, err.stack);
         res.status(500).send('Server Error: Could not update watchers');
+    }
+};
+
+// --- Bulk Operations ---
+
+/**
+ * @desc    Bulk update or archive tasks
+ * @route   POST /api/horizon/tasks/bulk
+ * @access  Private
+ * @body    { taskIds: [...], action: 'update'|'archive', updates: { status?, priority?, assignee?, category?, parentTask?, dueDate? } }
+ */
+exports.bulkUpdateTasks = async (req, res) => {
+    try {
+        const { taskIds, action = 'update', updates = {} } = req.body;
+
+        if (!Array.isArray(taskIds) || taskIds.length === 0) {
+            return res.status(400).json({ msg: 'taskIds must be a non-empty array' });
+        }
+        if (taskIds.length > 100) {
+            return res.status(400).json({ msg: 'Cannot update more than 100 tasks at once' });
+        }
+        if (taskIds.some(id => !mongoose.Types.ObjectId.isValid(id))) {
+            return res.status(400).json({ msg: 'One or more task IDs are invalid' });
+        }
+        if (!['update', 'archive'].includes(action)) {
+            return res.status(400).json({ msg: "action must be 'update' or 'archive'" });
+        }
+
+        // Whitelist of bulk-updatable fields
+        const allowed = {};
+        if (action === 'update') {
+            if (updates.status !== undefined) allowed.status = updates.status;
+            if (updates.priority !== undefined) allowed.priority = updates.priority;
+            if (updates.category !== undefined) allowed.category = updates.category;
+            if (updates.assignee !== undefined) allowed.assignee = updates.assignee || null;
+            if (updates.parentTask !== undefined) allowed.parentTask = updates.parentTask || null;
+            if (updates.dueDate !== undefined) allowed.dueDate = updates.dueDate || null;
+            if (Object.keys(allowed).length === 0) {
+                return res.status(400).json({ msg: 'No valid update fields provided' });
+            }
+        }
+
+        // Validate assignee and parent once for the whole batch
+        if (allowed.assignee) {
+            const isValidAssignee = await Membership.findOne({
+                user: allowed.assignee,
+                organization: req.organization._id,
+                status: 'active'
+            });
+            if (!isValidAssignee) {
+                return res.status(400).json({ msg: 'Assignee must be an active member of the organization' });
+            }
+        }
+        if (allowed.parentTask) {
+            const parentCheck = await verifyTasksBelongToOrganization(allowed.parentTask, req.organization._id);
+            if (!parentCheck.valid) {
+                return res.status(400).json({ msg: 'Parent task not found in your organization' });
+            }
+        }
+
+        const tasks = await Task.find({
+            _id: { $in: taskIds },
+            organization: req.organization._id
+        });
+
+        let updated = 0;
+        const skipped = [];
+        const newlyAssigned = [];
+
+        for (const task of tasks) {
+            if (!task.canUserModify(req.user._id, req.organizationRole)) {
+                skipped.push({ id: task._id, taskKey: task.taskKey, reason: 'no permission' });
+                continue;
+            }
+            if (allowed.parentTask && String(allowed.parentTask) === String(task._id)) {
+                skipped.push({ id: task._id, taskKey: task.taskKey, reason: 'cannot be its own parent' });
+                continue;
+            }
+
+            if (action === 'archive') {
+                task.isArchived = true;
+            } else {
+                if (allowed.status !== undefined && allowed.status !== task.status) {
+                    await TaskComment.createSystemComment(
+                        task._id, req.organization._id, 'status', task.status, allowed.status, req.user._id
+                    );
+                    task.status = allowed.status;
+                }
+                if (allowed.priority !== undefined) task.priority = allowed.priority;
+                if (allowed.category !== undefined) task.category = allowed.category;
+                if (allowed.dueDate !== undefined) task.dueDate = allowed.dueDate;
+                if (allowed.assignee !== undefined && String(allowed.assignee) !== String(task.assignee)) {
+                    task.assignee = allowed.assignee;
+                    if (allowed.assignee) newlyAssigned.push(task);
+                }
+                if (allowed.parentTask !== undefined && String(allowed.parentTask || '') !== String(task.parentTask || '')) {
+                    if (task.parentTask) {
+                        await Task.updateOne(
+                            { _id: task.parentTask, organization: req.organization._id },
+                            { $pull: { subtasks: task._id } }
+                        );
+                    }
+                    if (allowed.parentTask) {
+                        await Task.updateOne(
+                            { _id: allowed.parentTask, organization: req.organization._id },
+                            { $addToSet: { subtasks: task._id } }
+                        );
+                    }
+                    task.parentTask = allowed.parentTask;
+                }
+            }
+            await task.save();
+            updated += 1;
+        }
+
+        // Found vs requested mismatch = tasks outside the org or deleted
+        const foundIds = new Set(tasks.map(t => String(t._id)));
+        taskIds.filter(id => !foundIds.has(String(id)))
+            .forEach(id => skipped.push({ id, reason: 'not found in your organization' }));
+
+        // One assignment notification covering the batch
+        if (newlyAssigned.length > 0) {
+            notifyUsers({
+                organizationId: req.organization._id,
+                recipientIds: [allowed.assignee],
+                actorId: req.user._id,
+                type: 'task_assigned',
+                title: `You were assigned ${newlyAssigned.length} task${newlyAssigned.length === 1 ? '' : 's'}`,
+                message: newlyAssigned.slice(0, 10).map(t => `• ${t.taskKey ? t.taskKey + ' ' : ''}${t.title}`).join('\n'),
+                taskId: newlyAssigned.length === 1 ? newlyAssigned[0]._id : null
+            });
+        }
+
+        res.json({
+            msg: `${updated} task${updated === 1 ? '' : 's'} ${action === 'archive' ? 'archived' : 'updated'}`,
+            updated,
+            skipped
+        });
+
+    } catch (err) {
+        console.error('Error in bulk task update:', err.message, err.stack);
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({ msg: err.message });
+        }
+        res.status(500).send('Server Error: Could not bulk update tasks');
+    }
+};
+
+// --- CSV Import ---
+
+const CSV_STATUS_MAP = {
+    'todo': 'todo', 'to do': 'todo', 'yet to start': 'todo', 'not started': 'todo', 'open': 'todo',
+    'in progress': 'in_progress', 'in_progress': 'in_progress', 'inprogress': 'in_progress', 'wip': 'in_progress', 'doing': 'in_progress',
+    'in review': 'in_review', 'in_review': 'in_review', 'review': 'in_review',
+    'blocked': 'blocked', 'on hold': 'blocked',
+    'done': 'completed', 'completed': 'completed', 'complete': 'completed', 'closed': 'completed',
+    'cancelled': 'cancelled', 'canceled': 'cancelled', 'dropped': 'cancelled',
+};
+const CSV_PRIORITIES = ['low', 'medium', 'high', 'critical'];
+const CSV_CATEGORIES = ['development', 'marketing', 'sales', 'operations', 'finance', 'hr', 'design', 'other'];
+
+/**
+ * @desc    Import tasks from CSV (dry-run by default).
+ *          Columns (case/space-insensitive): title*, description, category,
+ *          subcategory, priority, status, assignee (email), due date,
+ *          start date, tags, parent (epic task key e.g. SLT-50), type (epic|task)
+ * @route   POST /api/horizon/tasks/import
+ * @access  Private
+ * @body    { csv: "<raw csv>", dryRun: true|false, defaultParentKey?: "SLT-50" }
+ */
+exports.importTasksCsv = async (req, res) => {
+    try {
+        const Papa = require('papaparse');
+        const { csv, dryRun = true, defaultParentKey } = req.body;
+
+        if (!csv || typeof csv !== 'string') {
+            return res.status(400).json({ msg: 'csv (string) is required' });
+        }
+        if (csv.length > 2 * 1024 * 1024) {
+            return res.status(400).json({ msg: 'CSV too large (max 2MB)' });
+        }
+
+        const parsed = Papa.parse(csv.trim(), { header: true, skipEmptyLines: true });
+        let rows = parsed.data || [];
+        if (rows.length === 0) {
+            return res.status(400).json({ msg: 'No data rows found in CSV (a header row is required)' });
+        }
+        if (rows.length > 500) {
+            return res.status(400).json({ msg: `Too many rows (${rows.length}); max 500 per import` });
+        }
+
+        // Normalize header names: "Due Date" -> "duedate"
+        const norm = (s) => String(s || '').toLowerCase().replace(/[\s_-]/g, '');
+        const get = (row, ...names) => {
+            for (const k of Object.keys(row)) {
+                if (names.includes(norm(k))) {
+                    const v = row[k];
+                    if (v !== null && v !== undefined && String(v).trim() !== '') return String(v).trim();
+                }
+            }
+            return null;
+        };
+
+        // Resolve assignee emails -> active members, parent keys -> tasks (cached)
+        const memberCache = new Map();
+        const parentCache = new Map();
+        const resolveMember = async (email) => {
+            const key = email.toLowerCase();
+            if (memberCache.has(key)) return memberCache.get(key);
+            const user = await HorizonUser.findOne({ email: key }).select('_id');
+            let result = null;
+            if (user) {
+                const member = await Membership.findOne({
+                    user: user._id, organization: req.organization._id, status: 'active'
+                });
+                if (member) result = user._id;
+            }
+            memberCache.set(key, result);
+            return result;
+        };
+        const resolveParent = async (taskKey) => {
+            const key = taskKey.toUpperCase();
+            if (parentCache.has(key)) return parentCache.get(key);
+            const parent = await Task.findOne({
+                organization: req.organization._id, taskKey: key
+            }).select('_id title');
+            parentCache.set(key, parent || null);
+            return parent || null;
+        };
+
+        const preview = [];
+        const validRows = [];
+
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const errors = [];
+            const warnings = [];
+
+            const title = get(row, 'title', 'task', 'action', 'name');
+            if (!title) errors.push('Missing title');
+            if (title && title.length > 200) errors.push('Title exceeds 200 characters');
+
+            let category = (get(row, 'category') || 'other').toLowerCase();
+            if (!CSV_CATEGORIES.includes(category)) {
+                warnings.push(`Unknown category "${category}" — defaulting to "other"`);
+                category = 'other';
+            }
+
+            let priority = (get(row, 'priority') || 'medium').toLowerCase();
+            if (!CSV_PRIORITIES.includes(priority)) {
+                warnings.push(`Unknown priority "${priority}" — defaulting to "medium"`);
+                priority = 'medium';
+            }
+
+            const rawStatus = get(row, 'status');
+            let status = 'todo';
+            if (rawStatus) {
+                status = CSV_STATUS_MAP[rawStatus.toLowerCase()];
+                if (!status) {
+                    warnings.push(`Unknown status "${rawStatus}" — defaulting to "todo"`);
+                    status = 'todo';
+                }
+            }
+
+            const parseDate = (value, label) => {
+                if (!value) return null;
+                const d = new Date(value);
+                if (isNaN(d.getTime())) {
+                    errors.push(`Invalid ${label}: "${value}"`);
+                    return null;
+                }
+                return d;
+            };
+            const dueDate = parseDate(get(row, 'duedate', 'due', 'targetdate', 'deadline'), 'due date');
+            const startDate = parseDate(get(row, 'startdate', 'start'), 'start date');
+
+            let assignee = null;
+            const assigneeEmail = get(row, 'assignee', 'assigneeemail', 'owner', 'email');
+            if (assigneeEmail) {
+                if (assigneeEmail.includes('@')) {
+                    assignee = await resolveMember(assigneeEmail);
+                    if (!assignee) errors.push(`Assignee "${assigneeEmail}" is not an active member`);
+                } else {
+                    warnings.push(`Assignee "${assigneeEmail}" is not an email — leaving unassigned`);
+                }
+            }
+
+            let parentId = null;
+            let parentTitle = null;
+            const parentKey = get(row, 'parent', 'parentkey', 'epic', 'parenttask') || defaultParentKey || null;
+            if (parentKey) {
+                const parent = await resolveParent(parentKey);
+                if (!parent) errors.push(`Parent task "${parentKey}" not found`);
+                else { parentId = parent._id; parentTitle = parent.title; }
+            }
+
+            const tagsRaw = get(row, 'tags', 'labels');
+            const tags = tagsRaw ? tagsRaw.split(/[,;|]/).map(t => t.trim().toLowerCase()).filter(Boolean) : [];
+
+            const taskType = (get(row, 'type', 'tasktype') || 'task').toLowerCase() === 'epic' ? 'epic' : 'task';
+
+            const candidate = {
+                title, description: get(row, 'description', 'details', 'notes', 'whyitmatters') || '',
+                category, subcategory: get(row, 'subcategory') || null,
+                priority, status, taskType, tags,
+                assignee, dueDate, startDate, parentTask: parentId,
+            };
+
+            preview.push({
+                row: i + 1,
+                title: title || '(missing)',
+                parent: parentKey ? `${parentKey}${parentTitle ? ' — ' + parentTitle : ''}` : null,
+                status, priority, category,
+                dueDate: dueDate ? dueDate.toISOString().slice(0, 10) : null,
+                assigned: !!assignee,
+                ok: errors.length === 0,
+                errors, warnings,
+            });
+            if (errors.length === 0) validRows.push(candidate);
+        }
+
+        const summary = {
+            totalRows: rows.length,
+            validRows: validRows.length,
+            errorRows: rows.length - validRows.length,
+        };
+
+        if (dryRun !== false && dryRun !== 'false') {
+            return res.json({ dryRun: true, summary, preview });
+        }
+
+        if (validRows.length === 0) {
+            return res.status(400).json({ msg: 'No valid rows to import', summary, preview });
+        }
+
+        // Create tasks sequentially so keys stay ordered like the file
+        const createdKeys = [];
+        for (const candidate of validRows) {
+            const task = new Task({
+                organization: req.organization._id,
+                creator: req.user._id,
+                watchers: [req.user._id],
+                ...candidate,
+            });
+            await task.save();
+            createdKeys.push(task.taskKey);
+            if (candidate.parentTask) {
+                await Task.updateOne(
+                    { _id: candidate.parentTask, organization: req.organization._id },
+                    { $addToSet: { subtasks: task._id } }
+                );
+            }
+            await TaskComment.createSystemComment(
+                task._id, req.organization._id, 'status', null, task.status, req.user._id
+            );
+        }
+
+        res.status(201).json({
+            msg: `${createdKeys.length} task${createdKeys.length === 1 ? '' : 's'} imported`,
+            summary,
+            createdKeys,
+            preview,
+        });
+
+    } catch (err) {
+        console.error('Error importing tasks from CSV:', err.message, err.stack);
+        res.status(500).send('Server Error: Could not import tasks');
     }
 };
 
