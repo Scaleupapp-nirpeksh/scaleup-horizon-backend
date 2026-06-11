@@ -3,6 +3,37 @@ const mongoose = require('mongoose');
 const Task = require('../models/taskModel');
 const TaskComment = require('../models/taskCommentModel');
 const Membership = require('../models/membershipModel');
+const HorizonUser = require('../models/userModel');
+
+// Escape user input before embedding it in a $regex query
+const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Verify that a set of task IDs all exist within the given organization.
+// Returns { valid: boolean, invalidIds: [...] }
+const verifyTasksBelongToOrganization = async (taskIds, organizationId, session = null) => {
+    const ids = (Array.isArray(taskIds) ? taskIds : [taskIds]).filter(Boolean);
+    if (ids.length === 0) return { valid: true, invalidIds: [] };
+
+    if (ids.some(id => !mongoose.Types.ObjectId.isValid(id))) {
+        return { valid: false, invalidIds: ids.filter(id => !mongoose.Types.ObjectId.isValid(id)) };
+    }
+
+    let query = Task.find({ _id: { $in: ids }, organization: organizationId }).select('_id');
+    if (session) query = query.session(session);
+    const found = await query;
+    const foundIds = new Set(found.map(t => String(t._id)));
+    const invalidIds = ids.map(String).filter(id => !foundIds.has(id));
+    return { valid: invalidIds.length === 0, invalidIds };
+};
+
+// Resolve a user's display name for system comments (falls back to the raw id)
+const resolveUserName = async (userId, session = null) => {
+    if (!userId) return 'Unassigned';
+    let query = HorizonUser.findById(userId).select('name');
+    if (session) query = query.session(session);
+    const user = await query;
+    return user ? user.name : String(userId);
+};
 
 // --- Task CRUD Operations ---
 
@@ -49,6 +80,22 @@ exports.createTask = async (req, res) => {
             finalSubcategory = customFields.subcategory;
         }
 
+        // Verify related tasks belong to this organization (prevents cross-tenant linking)
+        if (parentTask) {
+            const parentCheck = await verifyTasksBelongToOrganization(parentTask, req.organization._id, session);
+            if (!parentCheck.valid) {
+                await session.abortTransaction();
+                return res.status(400).json({ msg: 'Parent task not found in your organization' });
+            }
+        }
+        if (blockedBy && blockedBy.length > 0) {
+            const blockedCheck = await verifyTasksBelongToOrganization(blockedBy, req.organization._id, session);
+            if (!blockedCheck.valid) {
+                await session.abortTransaction();
+                return res.status(400).json({ msg: 'One or more blocking tasks were not found in your organization' });
+            }
+        }
+
         // Create the task
         const newTask = new Task({
             organization: req.organization._id,
@@ -72,10 +119,10 @@ exports.createTask = async (req, res) => {
 
         const task = await newTask.save({ session });
 
-        // If this is a subtask, update the parent task
+        // If this is a subtask, update the parent task (org-scoped)
         if (parentTask) {
-            await Task.findByIdAndUpdate(
-                parentTask,
+            await Task.findOneAndUpdate(
+                { _id: parentTask, organization: req.organization._id },
                 { $push: { subtasks: task._id } },
                 { session }
             );
@@ -137,26 +184,49 @@ exports.getTasks = async (req, res) => {
         if (priority) query.priority = priority;
         if (category) query.category = category;
         if (subcategory) query.subcategory = subcategory;
-        if (assignee) query.assignee = assignee;
-        if (creator) query.creator = creator;
+        // Cast IDs explicitly — the aggregation path below does not auto-cast like find()
+        if (assignee) {
+            if (!mongoose.Types.ObjectId.isValid(assignee)) {
+                return res.status(400).json({ msg: 'Invalid assignee ID format' });
+            }
+            query.assignee = new mongoose.Types.ObjectId(String(assignee));
+        }
+        if (creator) {
+            if (!mongoose.Types.ObjectId.isValid(creator)) {
+                return res.status(400).json({ msg: 'Invalid creator ID format' });
+            }
+            query.creator = new mongoose.Types.ObjectId(String(creator));
+        }
         if (!includeArchived || includeArchived === 'false') query.isArchived = false;
-        
+
+        // Combine "my tasks" and search conditions with $and so they don't overwrite each other
+        const andConditions = [];
+
         // My tasks filter
         if (myTasks === 'true') {
-            query.$or = [
-                { assignee: req.user._id },
-                { creator: req.user._id },
-                { watchers: req.user._id }
-            ];
+            andConditions.push({
+                $or: [
+                    { assignee: req.user._id },
+                    { creator: req.user._id },
+                    { watchers: req.user._id }
+                ]
+            });
         }
 
-        // Search in title, description, and subcategory
+        // Search in title, description, and subcategory (escaped to prevent regex injection)
         if (search) {
-            query.$or = [
-                { title: { $regex: search, $options: 'i' } },
-                { description: { $regex: search, $options: 'i' } },
-                { subcategory: { $regex: search, $options: 'i' } }
-            ];
+            const safeSearch = escapeRegex(search);
+            andConditions.push({
+                $or: [
+                    { title: { $regex: safeSearch, $options: 'i' } },
+                    { description: { $regex: safeSearch, $options: 'i' } },
+                    { subcategory: { $regex: safeSearch, $options: 'i' } }
+                ]
+            });
+        }
+
+        if (andConditions.length > 0) {
+            query.$and = andConditions;
         }
 
         // Sorting
@@ -167,7 +237,9 @@ exports.getTasks = async (req, res) => {
                     sortOptions = { dueDate: 1 };
                     break;
                 case 'priority':
-                    sortOptions = { priority: -1, createdAt: -1 };
+                    // Handled via aggregation below (priority is a string enum,
+                    // so a plain index sort would order it alphabetically)
+                    sortOptions = null;
                     break;
                 case 'status':
                     sortOptions = { status: 1, createdAt: -1 };
@@ -187,16 +259,52 @@ exports.getTasks = async (req, res) => {
         const skip = (pageNum - 1) * limitNum;
 
         // Execute query
-        const [tasks, totalCount] = await Promise.all([
-            Task.find(query)
-                .sort(sortOptions)
-                .limit(limitNum)
-                .skip(skip)
-                .populate('assignee', 'name email')
-                .populate('creator', 'name email')
-                .populate('parentTask', 'title'),
-            Task.countDocuments(query)
-        ]);
+        let tasks, totalCount;
+        if (sortBy === 'priority') {
+            // Rank priorities semantically: critical > high > medium > low
+            const [aggTasks, count] = await Promise.all([
+                Task.aggregate([
+                    { $match: query },
+                    {
+                        $addFields: {
+                            _priorityRank: {
+                                $switch: {
+                                    branches: [
+                                        { case: { $eq: ['$priority', 'critical'] }, then: 4 },
+                                        { case: { $eq: ['$priority', 'high'] }, then: 3 },
+                                        { case: { $eq: ['$priority', 'medium'] }, then: 2 },
+                                        { case: { $eq: ['$priority', 'low'] }, then: 1 }
+                                    ],
+                                    default: 0
+                                }
+                            }
+                        }
+                    },
+                    { $sort: { _priorityRank: -1, createdAt: -1 } },
+                    { $skip: skip },
+                    { $limit: limitNum },
+                    { $project: { _priorityRank: 0 } }
+                ]),
+                Task.countDocuments(query)
+            ]);
+            tasks = await Task.populate(aggTasks, [
+                { path: 'assignee', select: 'name email' },
+                { path: 'creator', select: 'name email' },
+                { path: 'parentTask', select: 'title' }
+            ]);
+            totalCount = count;
+        } else {
+            [tasks, totalCount] = await Promise.all([
+                Task.find(query)
+                    .sort(sortOptions)
+                    .limit(limitNum)
+                    .skip(skip)
+                    .populate('assignee', 'name email')
+                    .populate('creator', 'name email')
+                    .populate('parentTask', 'title'),
+                Task.countDocuments(query)
+            ]);
+        }
 
         res.json({
             tasks,
@@ -232,9 +340,10 @@ exports.getTaskById = async (req, res) => {
         .populate('assignee', 'name email')
         .populate('creator', 'name email')
         .populate('watchers', 'name email')
-        .populate('parentTask', 'title status')
-        .populate('subtasks', 'title status assignee')
-        .populate('blockedBy', 'title status');
+        // Related tasks are org-matched defensively so no cross-tenant data can leak
+        .populate({ path: 'parentTask', select: 'title status', match: { organization: req.organization._id } })
+        .populate({ path: 'subtasks', select: 'title status assignee', match: { organization: req.organization._id } })
+        .populate({ path: 'blockedBy', select: 'title status', match: { organization: req.organization._id } });
 
         if (!task) {
             return res.status(404).json({ msg: 'Task not found in your organization' });
@@ -257,100 +366,6 @@ exports.getTaskById = async (req, res) => {
     }
 };
 
-
-// Update the getTasks function to include subcategory in filters
-exports.getTasks = async (req, res) => {
-    try {
-        const {
-            status, priority, category, subcategory, assignee, creator,
-            search, sortBy, page = 1, limit = 20,
-            includeArchived = false, myTasks = false
-        } = req.query;
-
-        // Build query
-        const query = { organization: req.organization._id };
-
-        // Apply filters
-        if (status) query.status = status;
-        if (priority) query.priority = priority;
-        if (category) query.category = category;
-        if (subcategory) query.subcategory = subcategory;
-        if (assignee) query.assignee = assignee;
-        if (creator) query.creator = creator;
-        if (!includeArchived || includeArchived === 'false') query.isArchived = false;
-        
-        // My tasks filter
-        if (myTasks === 'true') {
-            query.$or = [
-                { assignee: req.user._id },
-                { creator: req.user._id },
-                { watchers: req.user._id }
-            ];
-        }
-
-        // Search in title, description, and subcategory
-        if (search) {
-            query.$or = [
-                { title: { $regex: search, $options: 'i' } },
-                { description: { $regex: search, $options: 'i' } },
-                { subcategory: { $regex: search, $options: 'i' } }
-            ];
-        }
-
-        // Sorting
-        let sortOptions = { createdAt: -1 }; // Default sort
-        if (sortBy) {
-            switch (sortBy) {
-                case 'dueDate':
-                    sortOptions = { dueDate: 1 };
-                    break;
-                case 'priority':
-                    sortOptions = { priority: -1, createdAt: -1 };
-                    break;
-                case 'status':
-                    sortOptions = { status: 1, createdAt: -1 };
-                    break;
-                case 'title':
-                    sortOptions = { title: 1 };
-                    break;
-                case 'category':
-                    sortOptions = { category: 1, subcategory: 1, createdAt: -1 };
-                    break;
-            }
-        }
-
-        // Pagination
-        const pageNum = parseInt(page, 10);
-        const limitNum = parseInt(limit, 10);
-        const skip = (pageNum - 1) * limitNum;
-
-        // Execute query
-        const [tasks, totalCount] = await Promise.all([
-            Task.find(query)
-                .sort(sortOptions)
-                .limit(limitNum)
-                .skip(skip)
-                .populate('assignee', 'name email')
-                .populate('creator', 'name email')
-                .populate('parentTask', 'title'),
-            Task.countDocuments(query)
-        ]);
-
-        res.json({
-            tasks,
-            pagination: {
-                currentPage: pageNum,
-                totalPages: Math.ceil(totalCount / limitNum),
-                totalTasks: totalCount,
-                hasMore: skip + tasks.length < totalCount
-            }
-        });
-
-    } catch (err) {
-        console.error('Error fetching tasks:', err.message, err.stack);
-        res.status(500).send('Server Error: Could not fetch tasks');
-    }
-};
 
 // Add a new endpoint to get available subcategories
 exports.getSubcategories = async (req, res) => {
@@ -446,7 +461,21 @@ exports.updateTask = async (req, res) => {
                     return res.status(400).json({ msg: 'Assignee must be an active member of the organization' });
                 }
             }
-            changes.push({ field: 'assignment', old: task.assignee, new: assignee });
+            // Record names (not raw ObjectIds) so the activity feed reads naturally
+            const [oldName, newName] = await Promise.all([
+                resolveUserName(task.assignee, session),
+                resolveUserName(assignee, session)
+            ]);
+            changes.push({ field: 'assignment', old: oldName, new: newName });
+        }
+
+        // Verify blocking tasks belong to this organization (prevents cross-tenant linking)
+        if (blockedBy !== undefined && Array.isArray(blockedBy) && blockedBy.length > 0) {
+            const blockedCheck = await verifyTasksBelongToOrganization(blockedBy, req.organization._id, session);
+            if (!blockedCheck.valid) {
+                await session.abortTransaction();
+                return res.status(400).json({ msg: 'One or more blocking tasks were not found in your organization' });
+            }
         }
 
         // Update fields
@@ -671,6 +700,15 @@ exports.updateTaskComment = async (req, res) => {
             return res.status(403).json({ msg: 'You can only edit your own comments' });
         }
 
+        // Preserve the previous content in the edit history before overwriting
+        if (comment.content !== content) {
+            comment.editHistory = comment.editHistory || [];
+            comment.editHistory.push({
+                content: comment.content,
+                editedAt: new Date()
+            });
+        }
+
         comment.content = content;
         await comment.save();
 
@@ -746,6 +784,11 @@ exports.assignTask = async (req, res) => {
             return res.status(404).json({ msg: 'Task not found in your organization' });
         }
 
+        // Same permission rule as updateTask: creator, current assignee, or org owner
+        if (!task.canUserModify(req.user._id, req.organizationRole)) {
+            return res.status(403).json({ msg: 'You do not have permission to assign this task' });
+        }
+
         // Verify assignee is a member
         if (assigneeId) {
             const isValidAssignee = await Membership.findOne({
@@ -763,13 +806,17 @@ exports.assignTask = async (req, res) => {
         task.assignee = assigneeId || null;
         await task.save();
 
-        // Create system comment
+        // Create system comment with readable names instead of raw ObjectIds
+        const [oldName, newName] = await Promise.all([
+            resolveUserName(oldAssignee),
+            resolveUserName(assigneeId)
+        ]);
         await TaskComment.createSystemComment(
             task._id,
             req.organization._id,
             'assignment',
-            oldAssignee,
-            assigneeId,
+            oldName,
+            newName,
             req.user._id
         );
 
@@ -812,7 +859,16 @@ exports.updateWatchers = async (req, res) => {
         const watcherId = userId || req.user._id;
 
         if (action === 'add') {
-            if (!task.watchers.includes(watcherId)) {
+            // Watchers must be active members of the organization
+            const isValidWatcher = await Membership.findOne({
+                user: watcherId,
+                organization: req.organization._id,
+                status: 'active'
+            });
+            if (!isValidWatcher) {
+                return res.status(400).json({ msg: 'Watcher must be an active member of the organization' });
+            }
+            if (!task.watchers.some(id => String(id) === String(watcherId))) {
                 task.watchers.push(watcherId);
             }
         } else {
@@ -846,15 +902,21 @@ exports.getTaskStats = async (req, res) => {
     try {
         const { startDate, endDate, assignee } = req.query;
 
-        const matchStage = { organization: req.organization._id };
-        
+        // Exclude archived tasks so stats match what the task list/board shows
+        const matchStage = { organization: req.organization._id, isArchived: false };
+
         if (startDate || endDate) {
             matchStage.createdAt = {};
             if (startDate) matchStage.createdAt.$gte = new Date(startDate);
             if (endDate) matchStage.createdAt.$lte = new Date(endDate);
         }
-        
-        if (assignee) matchStage.assignee = mongoose.Types.ObjectId(assignee);
+
+        if (assignee) {
+            if (!mongoose.Types.ObjectId.isValid(assignee)) {
+                return res.status(400).json({ msg: 'Invalid assignee ID format' });
+            }
+            matchStage.assignee = new mongoose.Types.ObjectId(String(assignee));
+        }
 
         const [
             statusStats,
@@ -887,7 +949,7 @@ exports.getTaskStats = async (req, res) => {
             
             // Subcategory distribution
             Task.aggregate([
-                { $match: { ...matchStage, subcategory: { $ne: null, $ne: '' } } },
+                { $match: { ...matchStage, subcategory: { $nin: [null, ''] } } },
                 { $group: { 
                     _id: { 
                         category: '$category', 

@@ -5,6 +5,12 @@ const HorizonUser = require('../models/userModel'); // Phase 1 Updated Model
 const Organization = require('../models/organizationModel'); // Phase 1 Model
 const Membership = require('../models/membershipModel'); // Phase 1 Model
 
+// JWT secret is required — never fall back to a hardcoded value.
+const JWT_SECRET = process.env.HORIZON_JWT_SECRET;
+if (!JWT_SECRET) {
+    throw new Error('FATAL: HORIZON_JWT_SECRET environment variable is not set. Refusing to start with an insecure default.');
+}
+
 /**
  * @desc    Protect routes: Verify JWT, load user, and active organization context.
  * Populates req.user, req.organization, and req.organizationRole if applicable.
@@ -18,7 +24,7 @@ const protect = async (req, res, next) => {
 
             // Verify token
             // The JWT payload is expected to be { user: { id: userId }, activeOrganizationId: orgId }
-            const decoded = jwt.verify(token, process.env.HORIZON_JWT_SECRET || 'yourHorizonSecret_fallback_super_secret'); // [cite: uploaded:scaleupapp-nirpeksh/scaleup-horizon-backend/scaleup-horizon-backend-fdf1198898eb693204a25adb48e93d7160daab22/middleware/authMiddleware.js]
+            const decoded = jwt.verify(token, JWT_SECRET);
 
             // Get user from the token
             req.user = await HorizonUser.findById(decoded.user.id).select('-password');

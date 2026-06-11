@@ -94,20 +94,13 @@ taskCommentSchema.index({ task: 1, createdAt: -1 });
 taskCommentSchema.index({ organization: 1, task: 1, isDeleted: 1 });
 taskCommentSchema.index({ author: 1, createdAt: -1 });
 
-// Pre-save hook for edit tracking
+// Pre-save hook for edit tracking.
+// Note: the previous content is appended to editHistory by the controller
+// BEFORE it overwrites `content` — a hook can no longer see the old value here.
 taskCommentSchema.pre('save', function(next) {
     if (this.isModified('content') && !this.isNew) {
         this.isEdited = true;
         this.editedAt = Date.now();
-        
-        // Save to edit history
-        if (!this.editHistory) {
-            this.editHistory = [];
-        }
-        this.editHistory.push({
-            content: this.content,
-            editedAt: this.editedAt,
-        });
     }
     next();
 });

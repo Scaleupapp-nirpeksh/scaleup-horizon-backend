@@ -3,6 +3,8 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const cron = require('node-cron');
 const connectDB = require('./config/db');
 
@@ -30,13 +32,39 @@ const { getTransactionCategorizer } = require('./services/transactionCategorizer
 const app = express();
 const PORT = process.env.HORIZON_PORT || 5001;
 
-// Middleware
+// Running behind nginx — trust the first proxy hop so req.ip (used by rate
+// limiting) reflects the real client IP instead of the proxy's.
+app.set('trust proxy', 1);
+
+// Security headers. CORP is relaxed because the API is consumed cross-origin
+// by the frontend on a different domain.
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
+
+// CORS: in production the frontend origin must be configured explicitly.
+const FRONTEND_URL = process.env.FRONTEND_URL;
+if (process.env.NODE_ENV === 'production' && !FRONTEND_URL) {
+    throw new Error('FATAL: FRONTEND_URL environment variable must be set in production for CORS.');
+}
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: FRONTEND_URL || 'http://localhost:3000',
     credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Brute-force protection on credential endpoints (login, registration, setup)
+const credentialLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { msg: 'Too many attempts from this IP. Please try again in 15 minutes.' }
+});
+app.use('/api/horizon/auth/login', credentialLimiter);
+app.use('/api/horizon/auth/register-owner', credentialLimiter);
+app.use('/api/horizon/auth/complete-setup', credentialLimiter);
 
 // Request logging middleware
 app.use((req, res, next) => {

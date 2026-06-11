@@ -14,6 +14,12 @@ const Membership = require('../models/membershipModel');
 
 // --- Helper Functions ---
 
+// JWT secret is required — never fall back to a hardcoded value.
+const JWT_SECRET = process.env.HORIZON_JWT_SECRET;
+if (!JWT_SECRET) {
+    throw new Error('FATAL: HORIZON_JWT_SECRET environment variable is not set. Refusing to start with an insecure default.');
+}
+
 /**
  * Generates a JWT token for the user.
  * Payload includes user ID and active organization ID.
@@ -23,13 +29,13 @@ const Membership = require('../models/membershipModel');
  */
 const generateToken = (userId, activeOrganizationId = null) => {
     const payload = {
-        user: { id: userId }, // Matches your previous JWT structure [cite: uploaded:scaleupapp-nirpeksh/scaleup-horizon-backend/scaleup-horizon-backend-fdf1198898eb693204a25adb48e93d7160daab22/controllers/authController.js]
+        user: { id: userId },
         activeOrganizationId: activeOrganizationId,
     };
     return jwt.sign(
         payload,
-        process.env.HORIZON_JWT_SECRET || 'yourHorizonSecret_fallback_super_secret', // Use environment variable [cite: uploaded:scaleupapp-nirpeksh/scaleup-horizon-backend/scaleup-horizon-backend-fdf1198898eb693204a25adb48e93d7160daab22/controllers/authController.js]
-        { expiresIn: process.env.JWT_EXPIRES_IN || '5h' } // Use environment variable [cite: uploaded:scaleupapp-nirpeksh/scaleup-horizon-backend/scaleup-horizon-backend-fdf1198898eb693204a25adb48e93d7160daab22/controllers/authController.js]
+        JWT_SECRET,
+        { expiresIn: process.env.JWT_EXPIRES_IN || process.env.HORIZON_JWT_EXPIRATION || '5h' }
     );
 };
 

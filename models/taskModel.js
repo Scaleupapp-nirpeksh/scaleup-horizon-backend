@@ -218,9 +218,9 @@ taskSchema.statics.getSubcategoriesForOrganization = async function(organization
     const subcategories = await this.distinct('subcategory', {
         organization: organizationId,
         category: category,
-        subcategory: { $ne: null, $ne: '' }
+        subcategory: { $nin: [null, ''] }
     });
-    return subcategories.sort();
+    return subcategories.filter(Boolean).sort();
 };
 
 const Task = mongoose.model('Task', taskSchema);
