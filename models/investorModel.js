@@ -95,7 +95,9 @@ const investorSchema = new mongoose.Schema({
     noteMaturityDate: { type: Date },
     totalCommittedAmount: { type: Number, default: 0, min: 0 },
     totalReceivedAmount: { type: Number, default: 0, min: 0 },
-    roundId: { type: mongoose.Schema.Types.ObjectId, ref: 'Round', required: true, index: true },
+    // Optional until the investor reaches a commitment stage: prospects are
+    // added with just a name; deal terms attach when the deal becomes real.
+    roundId: { type: mongoose.Schema.Types.ObjectId, ref: 'Round', required: false, default: null, index: true },
     tranches: { type: [trancheSchema], default: [] }, // ✅ FIX: Ensure default empty array
     status: {
         type: String,
@@ -106,6 +108,10 @@ const investorSchema = new mongoose.Schema({
     notes: { type: String, trim: true },
 
     // --- PIPELINE CRM FIELDS ---
+    // Prospect-stage estimate; kept separate from totalCommittedAmount so
+    // pipeline value never leaks into real fundraising numbers
+    expectedAmount: { type: Number, min: 0, default: null },
+    source: { type: String, trim: true, maxlength: 300 }, // how we met / who introduced
     nextFollowUpDate: { type: Date, default: null, index: true },
     lastContactedAt: { type: Date, default: null },
     interactions: [{

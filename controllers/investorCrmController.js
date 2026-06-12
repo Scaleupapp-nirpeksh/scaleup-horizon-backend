@@ -8,6 +8,59 @@ const Investor = require('../models/investorModel');
 const PIPELINE_STATUSES = ['Lead', 'Contacted', 'Introduced', 'Pitched', 'Follow-up',
     'Negotiating', 'Soft Committed', 'Hard Committed', 'Invested', 'Declined', 'Passed', 'On Hold'];
 
+// Stages a prospect can be created in (commitment stages require deal terms)
+const PROSPECT_STATUSES = ['Lead', 'Contacted', 'Introduced', 'Pitched', 'Follow-up', 'Negotiating'];
+
+/**
+ * @desc    Quick-add a prospect — name is the only required field.
+ *          No round, tranches or deal terms needed; those attach later
+ *          when the investor reaches a commitment stage.
+ * @route   POST /api/horizon/fundraising/investors/prospect
+ * @access  Private
+ */
+exports.createProspect = async (req, res) => {
+    try {
+        const {
+            name, entityName, email, phone, investorType, source,
+            expectedAmount, status, nextFollowUpDate, notes
+        } = req.body;
+
+        if (!name || !String(name).trim()) {
+            return res.status(400).json({ msg: 'Name is required' });
+        }
+        const stage = status || 'Lead';
+        if (!PROSPECT_STATUSES.includes(stage)) {
+            return res.status(400).json({
+                msg: `Prospects start in a pre-commitment stage (${PROSPECT_STATUSES.join(', ')}). Use the full investor form for committed deals.`
+            });
+        }
+
+        const prospect = new Investor({
+            organization: req.organization._id,
+            addedBy: req.user._id,
+            name: String(name).trim(),
+            entityName, email, phone,
+            investorType: investorType || 'Other',
+            source,
+            expectedAmount: expectedAmount ? Number(expectedAmount) : null,
+            status: stage,
+            notes,
+            nextFollowUpDate: nextFollowUpDate ? new Date(nextFollowUpDate) : null,
+            tranches: [],
+            totalCommittedAmount: 0,
+        });
+
+        await prospect.save();
+        res.status(201).json({ msg: 'Prospect added', investor: prospect });
+    } catch (err) {
+        console.error('Error creating prospect:', err.message, err.stack);
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({ msg: err.message });
+        }
+        res.status(500).send('Server Error: Could not add prospect');
+    }
+};
+
 /**
  * @desc    Move an investor through the pipeline / set follow-up date
  * @route   PATCH /api/horizon/fundraising/investors/:id/pipeline
@@ -30,6 +83,12 @@ exports.updatePipeline = async (req, res) => {
         if (status !== undefined) {
             if (!PIPELINE_STATUSES.includes(status)) {
                 return res.status(400).json({ msg: `Invalid status. Use one of: ${PIPELINE_STATUSES.join(', ')}` });
+            }
+            // Commitment gate: nobody reaches Invested without real deal terms
+            if (status === 'Invested' && !investor.roundId) {
+                return res.status(400).json({
+                    msg: 'Attach this investor to a round and add deal terms before marking them Invested (Investors tab → edit).'
+                });
             }
             if (status !== investor.status) {
                 investor.relationshipHistory = investor.relationshipHistory || [];

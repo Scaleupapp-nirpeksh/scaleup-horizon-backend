@@ -162,6 +162,12 @@ router.put('/investors/:id',
 // --- Pipeline CRM (lightweight: stage moves, follow-ups, interaction log) ---
 const investorCrmController = require('../controllers/investorCrmController');
 
+// Quick-add a prospect (name-only minimum; no round/tranches required)
+router.post('/investors/prospect',
+    authorizeOrganizationRole(['owner', 'member']),
+    investorCrmController.createProspect
+);
+
 router.patch('/investors/:id/pipeline',
     authorizeOrganizationRole(['owner', 'member']),
     investorCrmController.updatePipeline
