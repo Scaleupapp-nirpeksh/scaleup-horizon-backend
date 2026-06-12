@@ -13,6 +13,7 @@ const Headcount = require('../models/headcountModel');
 const Round = require('../models/roundModel');
 const Investor = require('../models/investorModel');
 const ManualKpiSnapshot = require('../models/manualKpiSnapshotModel');
+const Commitment = require('../models/commitmentModel');
 
 const OPEN_STATUSES = { $nin: ['completed', 'cancelled'] };
 
@@ -60,6 +61,7 @@ exports.getCommandCenter = async (req, res) => {
             rounds,
             investors,
             kpiSnapshots,
+            commitmentAgg,
         ] = await Promise.all([
             Task.find({ ...baseTask, status: OPEN_STATUSES, dueDate: { $lt: startOfToday } })
                 .select('title taskKey status priority dueDate parentTask assignee')
@@ -101,6 +103,21 @@ exports.getCommandCenter = async (req, res) => {
             Investor.find({ organization: orgId }).select('status'),
             ManualKpiSnapshot.find({ organization: orgId }).sort({ snapshotDate: -1 }).limit(2)
                 .select('snapshotDate totalRegisteredUsers dau mau'),
+            Commitment.aggregate([
+                {
+                    $match: {
+                        organization: orgId, direction: 'payable', includeInRunway: true,
+                        status: { $in: ['pending', 'partially_paid'] },
+                    }
+                },
+                {
+                    $group: {
+                        _id: null,
+                        outstanding: { $sum: { $subtract: ['$totalAmount', '$amountPaid'] } },
+                        count: { $sum: 1 },
+                    }
+                }
+            ]),
         ]);
 
         // ---- Portfolio: epic cards with child rollups ----
@@ -161,6 +178,14 @@ exports.getCommandCenter = async (req, res) => {
             ? Math.round((totalBalance / netMonthlyBurn) * 10) / 10
             : null; // null = not computable (no burn or no balance)
 
+        // ---- Honest runway: cash minus open payable commitments ----
+        const commitmentsOutstanding = commitmentAgg[0]?.outstanding || 0;
+        const commitmentsCount = commitmentAgg[0]?.count || 0;
+        const adjustedBalance = totalBalance - commitmentsOutstanding;
+        const adjustedRunwayMonths = netMonthlyBurn > 0 && commitmentsOutstanding > 0
+            ? Math.round((Math.max(0, adjustedBalance) / netMonthlyBurn) * 10) / 10
+            : null; // null = same as headline runway (nothing pending)
+
         // Note: actual-spend tracking on budgets is not implemented yet, so
         // this stays empty until budget-vs-actuals lands (Tier 1 work)
         const overBudget = budgets.filter(b => (b.totalActualSpent || 0) > (b.totalBudgetedAmount || 0));
@@ -180,11 +205,14 @@ exports.getCommandCenter = async (req, res) => {
 
         // ---- Attention items (server-assembled, ordered by urgency) ----
         const attention = [];
-        if (financeHasData && runwayMonths !== null && runwayMonths < 6) {
+        const effectiveRunway = adjustedRunwayMonths !== null ? adjustedRunwayMonths : runwayMonths;
+        if (financeHasData && effectiveRunway !== null && effectiveRunway < 6) {
             attention.push({
                 type: 'runway',
-                severity: runwayMonths < 3 ? 'error' : 'warning',
-                title: `Runway: ${runwayMonths} months at current burn`,
+                severity: effectiveRunway < 3 ? 'error' : 'warning',
+                title: adjustedRunwayMonths !== null
+                    ? `Runway: ${adjustedRunwayMonths} months after pending commitments`
+                    : `Runway: ${runwayMonths} months at current burn`,
                 link: '/financials'
             });
         }
@@ -224,6 +252,9 @@ exports.getCommandCenter = async (req, res) => {
                 monthlyBurn,
                 monthlyRevenue,
                 runwayMonths,
+                commitmentsOutstanding,
+                commitmentsCount,
+                adjustedRunwayMonths,
                 bankAccountCount: bankAccounts.length,
                 overBudgetCount: overBudget.length,
             },

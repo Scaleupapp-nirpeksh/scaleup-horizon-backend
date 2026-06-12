@@ -8,6 +8,7 @@ const {
     authorizeOrganizationRole
 } = require('../middleware/authMiddleware'); // Ensure path is correct
 const financialController = require('../controllers/financialController'); // Ensure this points to the multi-tenancy updated controller
+const commitmentController = require('../controllers/commitmentController');
 const { getTransactionCategorizer } = require('../services/transactionCategorizer'); // Preserved
 const Expense = require('../models/expenseModel'); // Preserved for the :id/correct-category route
 
@@ -38,6 +39,14 @@ router.get('/revenue', authorizeOrganizationRole(['owner', 'member']), financial
 router.get('/revenue/:id', authorizeOrganizationRole(['owner', 'member']), financialController.getRevenueEntryById);
 router.put('/revenue/:id', authorizeOrganizationRole(['owner', 'member']), financialController.updateRevenueEntry);
 router.delete('/revenue/:id', authorizeOrganizationRole(['owner', 'member']), financialController.deleteRevenueEntry); // Or restrict to 'owner'
+
+// --- Commitments & Pending Payments (informal liabilities tracker) ---
+router.get('/commitments', authorizeOrganizationRole(['owner', 'member']), commitmentController.getCommitments);
+router.post('/commitments', authorizeOrganizationRole(['owner', 'member']), commitmentController.createCommitment);
+router.put('/commitments/:id', authorizeOrganizationRole(['owner', 'member']), commitmentController.updateCommitment);
+router.delete('/commitments/:id', authorizeOrganizationRole(['owner', 'member']), commitmentController.deleteCommitment);
+router.post('/commitments/:id/payments', authorizeOrganizationRole(['owner', 'member']), commitmentController.addPayment);
+router.delete('/commitments/:id/payments/:paymentId', authorizeOrganizationRole(['owner', 'member']), commitmentController.deletePayment);
 
 // --- Fund Utilization & Overview (Module 2.1 & 2.4) ---
 // Assuming 'owner' and 'member' can view overview and reports

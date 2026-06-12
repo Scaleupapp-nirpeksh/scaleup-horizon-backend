@@ -203,23 +203,32 @@ function renderBusinessSection(d) {
 
 async function financeData(orgId, now) {
     const ninetyDaysAgo = new Date(now); ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
-    const [accounts, expAgg, revAgg] = await Promise.all([
+    const Commitment = require('../models/commitmentModel');
+    const [accounts, expAgg, revAgg, commitAgg] = await Promise.all([
         BankAccount.find({ organization: orgId }).select('currentBalance'),
         Expense.aggregate([{ $match: { organization: orgId, date: { $gte: ninetyDaysAgo } } }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
         Revenue.aggregate([{ $match: { organization: orgId, date: { $gte: ninetyDaysAgo } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+        Commitment.aggregate([
+            { $match: { organization: orgId, direction: 'payable', includeInRunway: true, status: { $in: ['pending', 'partially_paid'] } } },
+            { $group: { _id: null, outstanding: { $sum: { $subtract: ['$totalAmount', '$amountPaid'] } } } }
+        ]),
     ]);
-    if (accounts.length === 0 && !(expAgg[0]?.count > 0)) return { hasData: false };
+    const pending = commitAgg[0]?.outstanding || 0;
+    if (accounts.length === 0 && !(expAgg[0]?.count > 0) && pending === 0) return { hasData: false };
     const cash = accounts.reduce((s, a) => s + (a.currentBalance || 0), 0);
     const burn = Math.round((expAgg[0]?.total || 0) / 3);
     const rev = Math.round((revAgg[0]?.total || 0) / 3);
     const net = burn - rev;
     const runway = net > 0 && cash > 0 ? (cash / net).toFixed(1) + ' mo' : '—';
-    return { hasData: true, cash, burn, rev, runway };
+    const honestRunway = net > 0 && pending > 0 ? (Math.max(0, cash - pending) / net).toFixed(1) + ' mo' : null;
+    return { hasData: true, cash, burn, rev, runway, pending, honestRunway };
 }
 
 function financeText(f) {
     if (!f.hasData) return 'MONEY  — add bank accounts & expenses to see cash, burn and runway here.';
-    return `MONEY  Cash ${fmtINR(f.cash)} · Burn ${fmtINR(f.burn)}/mo · Revenue ${fmtINR(f.rev)}/mo · Runway ${f.runway}`;
+    let line = `MONEY  Cash ${fmtINR(f.cash)} · Burn ${fmtINR(f.burn)}/mo · Revenue ${fmtINR(f.rev)}/mo · Runway ${f.runway}`;
+    if (f.pending > 0) line += ` · Pending commitments ${fmtINR(f.pending)}${f.honestRunway ? ` (honest runway ${f.honestRunway})` : ''}`;
+    return line;
 }
 
 function financeHtml(f) {
@@ -230,9 +239,12 @@ function financeHtml(f) {
     const cell = (label, value) => `<td style="padding:2px 24px 2px 0;">
         <div style="font-size:11px;font-weight:700;letter-spacing:1px;color:${C.grey};">${label}</div>
         <div style="font-size:16px;font-weight:700;color:${C.text};margin-top:2px;">${esc(value)}</div></td>`;
+    const pendingCells = f.pending > 0
+        ? `${cell('PENDING DUES', fmtINR(f.pending))}${f.honestRunway ? cell('HONEST RUNWAY', f.honestRunway) : ''}`
+        : '';
     return `<div style="border:1px solid ${C.border};border-radius:8px;padding:14px 22px;margin:0 0 14px;">
       <table cellpadding="0" cellspacing="0">
-        <tr>${cell('CASH', fmtINR(f.cash))}${cell('BURN / MO', fmtINR(f.burn))}${cell('REVENUE / MO', fmtINR(f.rev))}${cell('RUNWAY', f.runway)}</tr>
+        <tr>${cell('CASH', fmtINR(f.cash))}${cell('BURN / MO', fmtINR(f.burn))}${cell('REVENUE / MO', fmtINR(f.rev))}${cell('RUNWAY', f.runway)}${pendingCells}</tr>
       </table></div>`;
 }
 
