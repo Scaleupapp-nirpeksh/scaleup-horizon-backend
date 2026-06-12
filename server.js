@@ -91,6 +91,7 @@ app.use('/api/horizon/tasks', taskRoutes);
 app.use('/api/horizon/notifications', require('./routes/notificationRoutes'));
 app.use('/api/horizon/dashboard', require('./routes/dashboardRoutes'));
 app.use('/api/horizon/investor-updates', require('./routes/investorUpdateRoutes'));
+app.use('/api/horizon/meetings', require('./routes/meetingRoutes'));
 
 // New enhanced features routes
 app.use('/api/horizon/enhanced', enhancedRoutes);
