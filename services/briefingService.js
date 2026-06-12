@@ -97,7 +97,8 @@ function renderBusinessHtml(d) {
 
 function renderHtmlEmail({ dateLabel, discussionNames, moneyHtml, sectionHtml, restRowsHtml, summary }) {
     return `<!DOCTYPE html>
-<html><body style="margin:0;padding:0;background:#f3f4f6;">
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;">
   <table cellpadding="0" cellspacing="0" style="width:100%;background:#f3f4f6;"><tr><td align="center" style="padding:24px 12px;">
     <table cellpadding="0" cellspacing="0" style="width:100%;max-width:620px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
       <tr><td style="background:linear-gradient(135deg,${C.indigo},${C.indigoDark});border-radius:16px 16px 0 0;padding:26px 28px;">
