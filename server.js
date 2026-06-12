@@ -291,6 +291,18 @@ function setupCronJobs() {
         }
     });
 
+    // Founder briefing (every morning 7:30 IST; features businesses whose
+    // weekly discussion day is today)
+    cron.schedule('30 7 * * *', async () => {
+        console.log('Running daily founder briefings...');
+        try {
+            const { runDailyBriefings } = require('./services/briefingService');
+            await runDailyBriefings();
+        } catch (error) {
+            console.error('Error in daily founder briefings:', error);
+        }
+    }, { timezone: 'Asia/Kolkata' });
+
     // Task reminder notifications (every day at 8 AM)
     cron.schedule('0 8 * * *', async () => {
         console.log('Running daily task reminder check...');

@@ -253,3 +253,41 @@ exports.getCommandCenter = async (req, res) => {
         res.status(500).send('Server Error: Could not build dashboard');
     }
 };
+
+/**
+ * @desc    Preview today's founder briefing (no send)
+ * @route   GET /api/horizon/dashboard/briefing/preview
+ * @access  Private
+ */
+exports.previewBriefing = async (req, res) => {
+    try {
+        const { buildBriefing } = require('../services/briefingService');
+        const briefing = await buildBriefing(req.organization._id, { allBusinesses: true });
+        if (!briefing) {
+            return res.json({ available: false, reason: 'Create business epics to enable briefings' });
+        }
+        res.json({ available: true, ...briefing });
+    } catch (err) {
+        console.error('Error previewing briefing:', err.message, err.stack);
+        res.status(500).send('Server Error: Could not build briefing');
+    }
+};
+
+/**
+ * @desc    Send the founder briefing to all members right now (all businesses)
+ * @route   POST /api/horizon/dashboard/briefing/send
+ * @access  Private
+ */
+exports.sendBriefing = async (req, res) => {
+    try {
+        const { sendBriefingForOrg } = require('../services/briefingService');
+        const result = await sendBriefingForOrg(req.organization._id, { allBusinesses: true });
+        if (result.sent === 0) {
+            return res.status(400).json({ msg: result.reason || 'Nothing to brief yet' });
+        }
+        res.json({ msg: `Briefing sent to ${result.sent} member${result.sent === 1 ? '' : 's'} (${result.emailed} email${result.emailed === 1 ? '' : 's'})`, ...result });
+    } catch (err) {
+        console.error('Error sending briefing:', err.message, err.stack);
+        res.status(500).send('Server Error: Could not send briefing');
+    }
+};

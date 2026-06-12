@@ -116,4 +116,40 @@ async function notifyUsers({ organizationId, recipientIds, actorId, type, title,
     }
 }
 
-module.exports = { notifyUsers, taskUrl };
+/**
+ * Email a full-length body (e.g. the daily briefing) to a set of users.
+ * No notification documents are created here — pair with notifyUsers()
+ * for the in-app copy. Respects each user's email preference.
+ */
+async function emailUsers({ recipientIds, subject, body }) {
+    if (!smtpTransport && !ses) return { sent: 0, skipped: 'no email transport' };
+    const users = await HorizonUser.find({ _id: { $in: recipientIds } })
+        .select('email name preferences');
+    let sent = 0;
+    for (const user of users) {
+        if (!user.email) continue;
+        if (user.preferences?.notifications?.emailEnabled === false) continue;
+        try {
+            if (smtpTransport) {
+                await smtpTransport.sendMail({
+                    from: `ScaleUp Horizon <${EMAIL_FROM}>`,
+                    to: user.email,
+                    subject,
+                    text: body,
+                });
+            } else {
+                await ses.sendEmail({
+                    Source: `ScaleUp Horizon <${EMAIL_FROM}>`,
+                    Destination: { ToAddresses: [user.email] },
+                    Message: { Subject: { Data: subject }, Body: { Text: { Data: body } } },
+                }).promise();
+            }
+            sent += 1;
+        } catch (err) {
+            console.error(`Digest email to ${user.email} failed: ${err.message}`);
+        }
+    }
+    return { sent };
+}
+
+module.exports = { notifyUsers, emailUsers, taskUrl };
