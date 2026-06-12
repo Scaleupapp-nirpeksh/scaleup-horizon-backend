@@ -94,6 +94,7 @@ app.use('/api/horizon/investor-updates', require('./routes/investorUpdateRoutes'
 app.use('/api/horizon/meetings', require('./routes/meetingRoutes'));
 app.use('/api/horizon/chief-of-staff', require('./routes/chiefOfStaffRoutes'));
 app.use('/api/horizon/data-rooms', require('./routes/dataRoomRoutes'));
+app.use('/api/horizon/outreach', require('./routes/outreachRoutes'));
 app.use('/api/horizon/public/data-rooms', require('./routes/publicDataRoomRoutes'));
 
 // New enhanced features routes
