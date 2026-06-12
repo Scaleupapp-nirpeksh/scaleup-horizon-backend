@@ -177,17 +177,11 @@ async function buildBriefing(orgId, { allBusinesses = false } = {}) {
         ? `☀️ Founder Briefing — ${dateLabel}\nToday's discussion: ${featured.map(b => b.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '')).join(', ')}`
         : `☀️ Founder Briefing — ${dateLabel}`;
 
-    const body = [
-        header,
-        '',
-        money,
-        '',
-        ...sections.flatMap(s => [s, '']),
-        restLines.length ? 'OTHER BUSINESSES\n' + restLines.join('\n') : '',
-        '',
-        `Open your command center: ${FRONTEND_URL}/dashboard`,
-        '—\nScaleUp Horizon · your daily founder briefing'
-    ].filter(Boolean).join('\n');
+    const parts = [header, money, ...sections];
+    if (restLines.length) parts.push('OTHER BUSINESSES\n' + restLines.join('\n'));
+    parts.push(`Open your command center: ${FRONTEND_URL}/dashboard`);
+    parts.push('—\nScaleUp Horizon · your daily founder briefing');
+    const body = parts.join('\n\n');
 
     const subject = featured.length > 0
         ? `${featured.map(b => b.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '')).join(' + ')} briefing — `
