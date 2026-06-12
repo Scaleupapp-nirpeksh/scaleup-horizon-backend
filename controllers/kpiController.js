@@ -236,12 +236,14 @@ exports.getUserGrowthMetrics = async (req, res) => {
         // --- MULTI-TENANCY: Filter by organizationId ---
         const latestSnapshot = await ManualKpiSnapshot.findOne({ organization: organizationId }).sort({ snapshotDate: -1 });
 
+        // "No data yet" is a normal state, not an error
         if (!latestSnapshot) {
-            return res.status(404).json({ msg: 'No KPI data available yet for your organization. Please add a snapshot.' });
+            return res.json({ hasData: false });
         }
 
         // User's original data structure - Preserved
         const data = {
+            hasData: true,
             snapshotDate: latestSnapshot.snapshotDate,
             totalRegisteredUsers: latestSnapshot.totalRegisteredUsers,
             newUsersToday: latestSnapshot.newUsersToday,
@@ -271,8 +273,9 @@ exports.getDauMauHistory = async (req, res) => {
             .limit(historyLimit)
             .select('snapshotDate dau mau');
 
+        // Empty history is a normal state — return an empty array, not 404
         if (!snapshots || snapshots.length === 0) {
-            return res.status(404).json({ msg: 'No historical KPI data available for your organization.' });
+            return res.json([]);
         }
         // User's original mapping logic - Preserved
         const history = snapshots.reverse().map(s => ({
@@ -297,10 +300,11 @@ exports.getFeatureUsageStats = async (req, res) => {
         // --- MULTI-TENANCY: Filter by organizationId ---
         const latestSnapshot = await ManualKpiSnapshot.findOne({ organization: organizationId }).sort({ snapshotDate: -1 });
         if (!latestSnapshot || !latestSnapshot.featureUsage) {
-            return res.status(404).json({ msg: 'No feature usage data available in the latest snapshot for your organization.' });
+            return res.json({ hasData: false });
         }
         // User's original response structure - Preserved
         res.json({
+            hasData: true,
             snapshotDate: latestSnapshot.snapshotDate,
             period: `Data for ${latestSnapshot.snapshotDate.toISOString().split('T')[0]}`,
             ...(latestSnapshot.featureUsage.toObject()), // Spread the featureUsage fields
@@ -322,10 +326,11 @@ exports.getRetentionMetrics = async (req, res) => {
         // --- MULTI-TENANCY: Filter by organizationId ---
         const latestSnapshot = await ManualKpiSnapshot.findOne({ organization: organizationId }).sort({ snapshotDate: -1 });
         if (!latestSnapshot || !latestSnapshot.retentionCohorts || latestSnapshot.retentionCohorts.length === 0) {
-            return res.status(404).json({ msg: 'No retention data available in the latest snapshot for your organization.' });
+            return res.json({ hasData: false, cohortAnalysis: [] });
         }
         // User's original response structure - Preserved
         res.json({
+            hasData: true,
             snapshotDate: latestSnapshot.snapshotDate,
             cohortAnalysis: latestSnapshot.retentionCohorts,
             lastUpdated: latestSnapshot.updatedAt

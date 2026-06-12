@@ -284,9 +284,12 @@ class CustomKPIService {
             
             if (!kpi) throw new Error('KPI not found or unauthorized');
 
-            // Get values for all variables with organization context
+            // Get values for all variables with organization context.
+            // Failures are collected as warnings and returned to the caller —
+            // a silently-zeroed variable produces confidently wrong KPIs.
             const scope = {};
-            
+            const warnings = [];
+
             for (const variable of kpi.formulaVariables) {
                 try {
                     const value = await this.getVariableValue(variable, organizationId, targetDate);
@@ -294,6 +297,7 @@ class CustomKPIService {
                 } catch (varError) {
                     console.error(`Error getting value for variable ${variable.variable} in KPI ${kpi.name}:`, varError.message);
                     scope[variable.variable] = 0;
+                    warnings.push(`Variable "${variable.variable}" failed (${varError.message}) — using 0`);
                 }
             }
 
@@ -316,11 +320,12 @@ class CustomKPIService {
             kpi.cache.currentValue = result;
             kpi.cache.lastCalculated = new Date();
             
-            // Calculate trend
-            if (kpi.cache.previousValue !== null && kpi.cache.previousValue !== 0) {
+            // Calculate trend (null when not meaningfully computable —
+            // Infinity does not survive JSON/BSON serialization)
+            if (kpi.cache.previousValue !== null && kpi.cache.previousValue !== undefined && kpi.cache.previousValue !== 0) {
                 kpi.cache.trend = ((result - kpi.cache.previousValue) / Math.abs(kpi.cache.previousValue)) * 100;
             } else if (kpi.cache.previousValue === 0 && result !== 0) {
-                kpi.cache.trend = Infinity;
+                kpi.cache.trend = null;
             } else {
                 kpi.cache.trend = 0;
             }
@@ -350,7 +355,8 @@ class CustomKPIService {
                 value: result,
                 previousValue: kpi.cache.previousValue,
                 trend: kpi.cache.trend,
-                formattedValue: this.formatValue(result, kpi.displayFormat)
+                formattedValue: this.formatValue(result, kpi.displayFormat),
+                warnings
             };
         } catch (error) {
             console.error(`KPI calculation error for kpiId ${kpiId}:`, error.message);
@@ -393,6 +399,38 @@ class CustomKPIService {
         }
     }
 
+    // Translate the schema's aggregation enum into a correct Mongo operation.
+    // Previously 'average'/'count'/'latest'/'earliest' produced invalid
+    // accumulators ($average, $count, ...) which threw and silently zeroed
+    // the variable — KPIs computed plausible but wrong values.
+    async aggregateField(Model, query, aggregation, fieldName, dateField = 'date') {
+        switch (aggregation) {
+            case 'count': {
+                return Model.countDocuments(query);
+            }
+            case 'latest':
+            case 'earliest': {
+                const doc = await Model.findOne(query)
+                    .sort({ [dateField]: aggregation === 'latest' ? -1 : 1 })
+                    .select(fieldName);
+                return doc ? (doc[fieldName] || 0) : 0;
+            }
+            case 'average':
+            case 'sum':
+            case 'min':
+            case 'max': {
+                const op = { average: '$avg', sum: '$sum', min: '$min', max: '$max' }[aggregation];
+                const result = await Model.aggregate([
+                    { $match: query },
+                    { $group: { _id: null, value: { [op]: `$${fieldName}` } } }
+                ]);
+                return result.length > 0 && result[0].value !== null ? result[0].value : 0;
+            }
+            default:
+                throw new Error(`Unsupported aggregation: ${aggregation}`);
+        }
+    }
+
     // Get revenue value - WITH ORGANIZATION FILTER
     async getRevenueValue(variable, timeRange, organizationId, RevenueModel) {
         const query = {
@@ -404,17 +442,7 @@ class CustomKPIService {
             this.applyFilter(query, variable.filter);
         }
 
-        const result = await RevenueModel.aggregate([
-            { $match: query },
-            {
-                $group: {
-                    _id: null,
-                    value: { [`$${variable.aggregation}`]: '$amount' }
-                }
-            }
-        ]);
-
-        return result.length > 0 && result[0].value !== null ? result[0].value : 0;
+        return this.aggregateField(RevenueModel, query, variable.aggregation || 'sum', 'amount');
     }
 
     // Get expense value - WITH ORGANIZATION FILTER
@@ -428,37 +456,24 @@ class CustomKPIService {
             this.applyFilter(query, variable.filter);
         }
 
-        const result = await ExpenseModel.aggregate([
-            { $match: query },
-            {
-                $group: {
-                    _id: null,
-                    value: { [`$${variable.aggregation}`]: '$amount' }
-                }
-            }
-        ]);
-
-        return result.length > 0 && result[0].value !== null ? result[0].value : 0;
+        return this.aggregateField(ExpenseModel, query, variable.aggregation || 'sum', 'amount');
     }
 
     // Get bank balance value - WITH ORGANIZATION FILTER
     async getBankBalanceValue(variable, organizationId, BankAccountModel) {
-        if (variable.aggregation === 'latest' || variable.aggregation === 'sum') {
+        // 'latest' and 'sum' both mean "total cash right now" across accounts
+        if (!variable.aggregation || variable.aggregation === 'latest' || variable.aggregation === 'sum' || variable.aggregation === 'earliest') {
             const accounts = await BankAccountModel.find({ organization: organizationId });
             return accounts.reduce((sum, acc) => sum + (acc.currentBalance || 0), 0);
         }
-        
-        const result = await BankAccountModel.aggregate([
-            { $match: { organization: organizationId } },
-            {
-                $group: {
-                    _id: null,
-                    value: { [`$${variable.aggregation}`]: '$currentBalance' }
-                }
-            }
-        ]);
 
-        return result.length > 0 && result[0].value !== null ? result[0].value : 0;
+        return this.aggregateField(
+            BankAccountModel,
+            { organization: organizationId },
+            variable.aggregation,
+            'currentBalance',
+            'updatedAt'
+        );
     }
 
     // Get user count value - WITH ORGANIZATION FILTER
@@ -663,21 +678,36 @@ class CustomKPIService {
 
             let shouldAlert = false;
             const currentValue = kpi.cache.currentValue;
+            const trend = kpi.cache.trend;
 
             if (currentValue === null || currentValue === undefined) continue;
 
+            // Conditions per the schema enum; target-based conditions compare
+            // against the KPI's current target (falling back to the threshold)
+            const target = this.getCurrentTarget(kpi, new Date());
+            const reference = (target !== null && target !== undefined) ? target : alert.threshold;
+
             switch (alert.condition) {
-                case 'above':
+                case 'above_target':
+                    shouldAlert = currentValue > reference;
+                    break;
+                case 'below_target':
+                    shouldAlert = currentValue < reference;
+                    break;
+                case 'equals_target':
+                    shouldAlert = Math.abs(currentValue - reference) < 0.01;
+                    break;
+                case 'absolute_value_above':
                     shouldAlert = currentValue > alert.threshold;
                     break;
-                case 'below':
+                case 'absolute_value_below':
                     shouldAlert = currentValue < alert.threshold;
                     break;
-                case 'equals':
-                    shouldAlert = Math.abs(currentValue - alert.threshold) < (alert.tolerance || 0.01);
+                case 'percentage_change_increase':
+                    shouldAlert = trend !== null && trend > alert.threshold;
                     break;
-                case 'change_percent':
-                    shouldAlert = kpi.cache.trend !== null && Math.abs(kpi.cache.trend) > alert.threshold;
+                case 'percentage_change_decrease':
+                    shouldAlert = trend !== null && trend < -Math.abs(alert.threshold);
                     break;
                 default:
                     console.warn(`Unknown alert condition: ${alert.condition} for KPI ${kpi.name}`);
@@ -689,12 +719,41 @@ class CustomKPIService {
         }
     }
 
-    // Trigger alert
+    // Trigger alert: in-app + email notification to all active org members,
+    // with a 20-hour cooldown per alert so daily recalculations don't spam.
     async triggerAlert(kpi, alert, currentValue) {
-        console.log(`ALERT: KPI "${kpi.displayName}" triggered alert. Current value: ${this.formatValue(currentValue, kpi.displayFormat)}, Condition: ${alert.condition} ${alert.threshold}`);
-        
-        // In production, send notifications to all relevant users in the organization
-        // You could store alert preferences per user within the organization
+        const formatted = this.formatValue(currentValue, kpi.displayFormat);
+        console.log(`ALERT: KPI "${kpi.displayName}" — value ${formatted}, condition ${alert.condition} ${alert.threshold}`);
+
+        const COOLDOWN_MS = 20 * 60 * 60 * 1000;
+        if (alert.lastTriggeredAt && (Date.now() - new Date(alert.lastTriggeredAt).getTime()) < COOLDOWN_MS) {
+            return;
+        }
+
+        try {
+            const { notifyUsers } = require('./notificationService');
+            const Membership = mongoose.models.Membership || mongoose.model('Membership');
+            const members = await Membership.find({
+                organization: kpi.organization,
+                status: 'active'
+            }).select('user');
+
+            await notifyUsers({
+                organizationId: kpi.organization,
+                recipientIds: members.map(m => m.user),
+                actorId: null,
+                type: 'system',
+                title: `KPI alert: ${kpi.displayName} is ${formatted}`,
+                message: alert.messageTemplate ||
+                    `"${kpi.displayName}" is ${alert.condition.replace(/_/g, ' ')} (threshold ${alert.threshold}). Current value: ${formatted}.`,
+            });
+
+            alert.lastTriggeredAt = new Date();
+            await kpi.save();
+        } catch (err) {
+            // Alerting must never break a KPI calculation
+            console.error(`KPI alert notification failed for ${kpi.name}:`, err.message);
+        }
     }
 
     // Calculate all KPIs for an organization - RENAMED AND UPDATED

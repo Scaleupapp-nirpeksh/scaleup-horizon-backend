@@ -317,9 +317,87 @@ router.get('/kpis/custom',
     }
 );
 
+// Get a single KPI
+router.get('/kpis/custom/:id',
+    authorizeOrganizationRole(['owner', 'member']),
+    async (req, res) => {
+        try {
+            const kpi = await CustomKPI.findOne({
+                _id: req.params.id,
+                organization: req.organization._id
+            });
+            if (!kpi) return res.status(404).json({ msg: 'KPI not found in your organization' });
+            res.json(kpi);
+        } catch (error) {
+            console.error('Error fetching KPI:', error);
+            res.status(500).json({ msg: 'Failed to fetch KPI' });
+        }
+    }
+);
+
+// Update a KPI
+router.put('/kpis/custom/:id',
+    authorizeOrganizationRole(['owner', 'member']),
+    async (req, res) => {
+        try {
+            const kpi = await CustomKPI.findOne({
+                _id: req.params.id,
+                organization: req.organization._id
+            });
+            if (!kpi) return res.status(404).json({ msg: 'KPI not found in your organization' });
+
+            // Whitelisted editable fields (cache/organization/createdBy stay server-managed)
+            const editable = [
+                'displayName', 'description', 'category', 'formula', 'formulaVariables',
+                'displayFormat', 'visualization', 'targets', 'alerts', 'isPinned', 'isActive', 'tags'
+            ];
+            editable.forEach(field => {
+                if (req.body[field] !== undefined) kpi[field] = req.body[field];
+            });
+
+            await kpi.save();
+
+            // Recalculate with the new definition (best effort)
+            try {
+                const kpiService = new CustomKPIService();
+                await kpiService.calculateKPIValue(kpi._id, req.organization._id);
+            } catch (calcErr) {
+                console.warn(`Post-update KPI recalculation failed for ${kpi.name}:`, calcErr.message);
+            }
+
+            res.json(await CustomKPI.findById(kpi._id));
+        } catch (error) {
+            console.error('Error updating KPI:', error);
+            if (error.name === 'ValidationError') {
+                return res.status(400).json({ msg: error.message });
+            }
+            res.status(500).json({ msg: 'Failed to update KPI' });
+        }
+    }
+);
+
+// Delete (deactivate) a KPI
+router.delete('/kpis/custom/:id',
+    authorizeOrganizationRole(['owner', 'member']),
+    async (req, res) => {
+        try {
+            const kpi = await CustomKPI.findOneAndUpdate(
+                { _id: req.params.id, organization: req.organization._id },
+                { $set: { isActive: false, isPinned: false } },
+                { new: true }
+            );
+            if (!kpi) return res.status(404).json({ msg: 'KPI not found in your organization' });
+            res.json({ msg: 'KPI deleted' });
+        } catch (error) {
+            console.error('Error deleting KPI:', error);
+            res.status(500).json({ msg: 'Failed to delete KPI' });
+        }
+    }
+);
+
 // Calculate KPI value
-router.post('/kpis/custom/:id/calculate', 
-    authorizeOrganizationRole(['owner', 'member']), 
+router.post('/kpis/custom/:id/calculate',
+    authorizeOrganizationRole(['owner', 'member']),
     async (req, res) => {
         try {
             const kpiService = new CustomKPIService();

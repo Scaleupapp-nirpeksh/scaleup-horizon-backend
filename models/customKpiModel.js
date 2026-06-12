@@ -84,7 +84,8 @@ const kpiAlertSchema = new mongoose.Schema({
     },
     recipients: [{ type: String, trim: true }], // Could be user emails or role names
     messageTemplate: { type: String, trim: true, maxlength: [500, 'Alert message template cannot exceed 500 characters.'] }, // Optional custom message
-    isActive: { type: Boolean, default: true }
+    isActive: { type: Boolean, default: true },
+    lastTriggeredAt: { type: Date, default: null } // Cooldown anchor so daily recalcs don't spam
 });
 
 const kpiVisualizationSchema = new mongoose.Schema({
