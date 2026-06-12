@@ -30,6 +30,98 @@ function parseDiscussionDay(description) {
     return m ? m[1] : null;
 }
 
+// ---------- HTML rendering (email-safe inline styles) ----------
+const esc = (s) => String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const C = {
+    indigo: '#4f46e5', indigoDark: '#3730a3', red: '#dc2626', redBg: '#fef2f2',
+    amber: '#d97706', amberBg: '#fffbeb', green: '#059669', greenBg: '#ecfdf5',
+    grey: '#6b7280', greyBg: '#f9fafb', text: '#111827', border: '#e5e7eb', purple: '#7c3aed',
+};
+
+function htmlTaskRow(t, accentColor) {
+    return `<tr>
+      <td style="padding:6px 0 6px 14px;border-left:3px solid ${accentColor};">
+        <span style="font-family:ui-monospace,Menlo,monospace;font-size:11px;font-weight:700;color:${C.grey};">${esc(t.taskKey || '')}</span>
+        <span style="font-size:13px;color:${C.text};"> ${esc(t.title)}</span>
+        ${t.dueDate ? `<span style="font-size:12px;color:${C.grey};"> · due ${esc(fmtDate(t.dueDate))}</span>` : ''}
+      </td></tr>`;
+}
+
+function htmlSection(label, emoji, tasks, color, bg) {
+    if (!tasks.length) return '';
+    return `<div style="margin:12px 0 0;">
+      <div style="display:inline-block;background:${bg};color:${color};font-size:11px;font-weight:700;letter-spacing:0.5px;padding:3px 10px;border-radius:99px;">${emoji} ${label} (${tasks.length})</div>
+      <table cellpadding="0" cellspacing="0" style="width:100%;margin-top:6px;">${tasks.map(t => htmlTaskRow(t, color)).join('')}</table>
+    </div>`;
+}
+
+function renderBusinessHtml(d) {
+    const name = d.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '');
+    const pctColor = d.pct >= 60 ? C.green : d.pct >= 25 ? C.amber : C.indigo;
+
+    const agenda = [];
+    if (d.overdue.length) agenda.push(`Reschedule or finish the ${d.overdue.length} overdue item${d.overdue.length === 1 ? '' : 's'}`);
+    if (d.blocked > 0) agenda.push(`Unblock the ${d.blocked} blocked task${d.blocked === 1 ? '' : 's'}`);
+    if (d.stalled.length) agenda.push(`Revive or drop the ${d.stalled.length} stalled task${d.stalled.length === 1 ? '' : 's'}`);
+    if (d.undated > 0) agenda.push(`Put dates on the ${d.undated} undated open task${d.undated === 1 ? '' : 's'}`);
+    if (d.open === 0 && d.total > 0) agenda.push('All tasks closed — plan the next set of priorities');
+    if (d.total === 0) agenda.push('No tasks yet — break this plan into first tasks');
+
+    return `
+    <div style="background:#ffffff;border:1px solid ${C.border};border-radius:14px;padding:20px 22px;margin:0 0 16px;">
+      <table cellpadding="0" cellspacing="0" style="width:100%;">
+        <tr>
+          <td style="font-size:16px;font-weight:800;color:${C.text};">${esc(name)}</td>
+          <td align="right" style="font-size:13px;font-weight:700;color:${pctColor};white-space:nowrap;">${d.done}/${d.total} done · ${d.pct}%</td>
+        </tr>
+      </table>
+      <div style="background:${C.greyBg};border-radius:99px;height:8px;margin:10px 0 2px;overflow:hidden;">
+        <div style="background:${pctColor};height:8px;width:${Math.max(d.pct, 2)}%;border-radius:99px;"></div>
+      </div>
+      ${htmlSection('OVERDUE', '⚠️', d.overdue, C.red, C.redBg)}
+      ${htmlSection('THIS WEEK', '🗓', d.dueThisWeek, C.amber, C.amberBg)}
+      ${htmlSection('DONE LAST 7 DAYS', '🎉', d.doneLastWeek, C.green, C.greenBg)}
+      ${htmlSection('STALLED 7+ DAYS', '😴', d.stalled, C.grey, C.greyBg)}
+      ${agenda.length ? `
+      <div style="background:#eef2ff;border-radius:10px;padding:12px 16px;margin-top:14px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.5px;color:${C.indigoDark};margin-bottom:6px;">💡 AGENDA SUGGESTIONS</div>
+        ${agenda.map((a, i) => `<div style="font-size:13px;color:${C.text};padding:2px 0;">${i + 1}. ${esc(a)}</div>`).join('')}
+      </div>` : ''}
+      <div style="margin-top:14px;">
+        <a href="${FRONTEND_URL}/tasks?epic=${d.epic._id}" style="display:inline-block;background:${C.indigo};color:#ffffff;font-size:13px;font-weight:700;text-decoration:none;padding:8px 18px;border-radius:99px;">Open ${esc(name)} board →</a>
+      </div>
+    </div>`;
+}
+
+function renderHtmlEmail({ dateLabel, discussionNames, moneyHtml, sectionHtml, restRowsHtml, summary }) {
+    return `<!DOCTYPE html>
+<html><body style="margin:0;padding:0;background:#f3f4f6;">
+  <table cellpadding="0" cellspacing="0" style="width:100%;background:#f3f4f6;"><tr><td align="center" style="padding:24px 12px;">
+    <table cellpadding="0" cellspacing="0" style="width:100%;max-width:620px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+      <tr><td style="background:linear-gradient(135deg,${C.indigo},${C.indigoDark});border-radius:16px 16px 0 0;padding:26px 28px;">
+        <div style="font-size:21px;font-weight:800;color:#ffffff;">☀️ Founder Briefing</div>
+        <div style="font-size:13px;color:rgba(255,255,255,0.85);margin-top:4px;">${esc(dateLabel)}</div>
+        ${discussionNames ? `<div style="margin-top:12px;display:inline-block;background:rgba(255,255,255,0.16);color:#ffffff;font-size:12px;font-weight:600;padding:5px 14px;border-radius:99px;">Today's discussion: ${esc(discussionNames)}</div>` : ''}
+        <div style="font-size:12px;color:rgba(255,255,255,0.75);margin-top:10px;">${esc(summary)}</div>
+      </td></tr>
+      <tr><td style="background:#ffffff;border-radius:0 0 16px 16px;padding:22px 20px;border:1px solid ${C.border};border-top:none;">
+        ${moneyHtml}
+        ${sectionHtml}
+        ${restRowsHtml}
+        <div style="text-align:center;margin-top:8px;">
+          <a href="${FRONTEND_URL}/dashboard" style="display:inline-block;background:#111827;color:#ffffff;font-size:13px;font-weight:700;text-decoration:none;padding:10px 26px;border-radius:99px;">Open your command center</a>
+        </div>
+      </td></tr>
+      <tr><td style="padding:18px 8px;text-align:center;">
+        <div style="font-size:11px;color:${C.grey};">ScaleUp Horizon · your daily founder briefing<br/>Sent automatically every morning at 7:30 on each business's discussion day</div>
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`;
+}
+
 async function collectEpicData(orgId, epic, now) {
     const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0);
     const endOfWeek = new Date(startOfToday); endOfWeek.setDate(endOfWeek.getDate() + 7);
@@ -101,22 +193,39 @@ function renderBusinessSection(d) {
     return lines.join('\n');
 }
 
-async function financeLine(orgId, now) {
+async function financeData(orgId, now) {
     const ninetyDaysAgo = new Date(now); ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
     const [accounts, expAgg, revAgg] = await Promise.all([
         BankAccount.find({ organization: orgId }).select('currentBalance'),
         Expense.aggregate([{ $match: { organization: orgId, date: { $gte: ninetyDaysAgo } } }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
         Revenue.aggregate([{ $match: { organization: orgId, date: { $gte: ninetyDaysAgo } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     ]);
-    if (accounts.length === 0 && !(expAgg[0]?.count > 0)) {
-        return 'MONEY  — add bank accounts & expenses to see cash, burn and runway here.';
-    }
+    if (accounts.length === 0 && !(expAgg[0]?.count > 0)) return { hasData: false };
     const cash = accounts.reduce((s, a) => s + (a.currentBalance || 0), 0);
     const burn = Math.round((expAgg[0]?.total || 0) / 3);
     const rev = Math.round((revAgg[0]?.total || 0) / 3);
     const net = burn - rev;
     const runway = net > 0 && cash > 0 ? (cash / net).toFixed(1) + ' mo' : '—';
-    return `MONEY  Cash ${fmtINR(cash)} · Burn ${fmtINR(burn)}/mo · Revenue ${fmtINR(rev)}/mo · Runway ${runway}`;
+    return { hasData: true, cash, burn, rev, runway };
+}
+
+function financeText(f) {
+    if (!f.hasData) return 'MONEY  — add bank accounts & expenses to see cash, burn and runway here.';
+    return `MONEY  Cash ${fmtINR(f.cash)} · Burn ${fmtINR(f.burn)}/mo · Revenue ${fmtINR(f.rev)}/mo · Runway ${f.runway}`;
+}
+
+function financeHtml(f) {
+    if (!f.hasData) {
+        return `<div style="background:${C.greyBg};border:1px dashed ${C.border};border-radius:12px;padding:14px 18px;margin:0 0 16px;font-size:13px;color:${C.grey};">
+          💰 Add bank accounts &amp; expenses in ScaleUp Horizon to see <b>cash, burn and runway</b> here every morning.</div>`;
+    }
+    const cell = (label, value, color = C.text) => `<td align="center" style="padding:4px 6px;">
+        <div style="font-size:16px;font-weight:800;color:${color};">${esc(value)}</div>
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;color:${C.grey};">${label}</div></td>`;
+    return `<div style="background:${C.greyBg};border:1px solid ${C.border};border-radius:12px;padding:12px 8px;margin:0 0 16px;">
+      <table cellpadding="0" cellspacing="0" style="width:100%;">
+        <tr>${cell('CASH', fmtINR(f.cash))}${cell('BURN /MO', fmtINR(f.burn), C.red)}${cell('REVENUE /MO', fmtINR(f.rev), C.green)}${cell('RUNWAY', f.runway, C.indigo)}</tr>
+      </table></div>`;
 }
 
 /**
@@ -149,6 +258,7 @@ async function buildBriefing(orgId, { allBusinesses = false } = {}) {
     const rest = businesses.filter(b => !featured.includes(b));
 
     const sections = [];
+    const sectionsHtml = [];
     let totals = { overdue: 0, dueThisWeek: 0 };
 
     for (const b of featured) {
@@ -156,9 +266,11 @@ async function buildBriefing(orgId, { allBusinesses = false } = {}) {
         totals.overdue += d.overdue.length;
         totals.dueThisWeek += d.dueThisWeek.length;
         sections.push(renderBusinessSection(d));
+        sectionsHtml.push(renderBusinessHtml(d));
     }
 
     const restLines = [];
+    const restRows = [];
     for (const b of rest) {
         const d = await collectEpicData(orgId, b.epic, now);
         totals.overdue += d.overdue.length;
@@ -168,30 +280,55 @@ async function buildBriefing(orgId, { allBusinesses = false } = {}) {
             + (d.overdue.length ? ` · ${d.overdue.length} overdue` : '')
             + (d.dueThisWeek.length ? ` · ${d.dueThisWeek.length} due this week` : '')
             + (b.discussionDay ? `  (discussion: ${b.discussionDay})` : ''));
+        restRows.push(`<tr>
+            <td style="padding:8px 0;font-size:13px;font-weight:600;color:${C.text};">
+              <a href="${FRONTEND_URL}/tasks?epic=${b.epic._id}" style="color:${C.indigo};text-decoration:none;">${esc(name)}</a>
+              ${b.discussionDay ? `<span style="font-size:11px;color:${C.grey};font-weight:400;"> · ${esc(b.discussionDay)}s</span>` : ''}
+            </td>
+            <td align="right" style="font-size:12px;color:${C.grey};white-space:nowrap;">
+              ${d.done}/${d.total} done${d.overdue.length ? ` · <span style="color:${C.red};font-weight:700;">${d.overdue.length} overdue</span>` : ''}${d.dueThisWeek.length ? ` · ${d.dueThisWeek.length} this week` : ''}
+            </td></tr>`);
     }
 
-    const money = await financeLine(orgId, now);
+    const finance = await financeData(orgId, now);
     const dateLabel = now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
+    const discussionNames = featured.map(b => b.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '')).join(', ');
 
+    // Plain-text version (fallback for clients without HTML)
     const header = featured.length > 0
-        ? `☀️ Founder Briefing — ${dateLabel}\nToday's discussion: ${featured.map(b => b.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '')).join(', ')}`
+        ? `☀️ Founder Briefing — ${dateLabel}\nToday's discussion: ${discussionNames}`
         : `☀️ Founder Briefing — ${dateLabel}`;
-
-    const parts = [header, money, ...sections];
+    const parts = [header, financeText(finance), ...sections];
     if (restLines.length) parts.push('OTHER BUSINESSES\n' + restLines.join('\n'));
     parts.push(`Open your command center: ${FRONTEND_URL}/dashboard`);
     parts.push('—\nScaleUp Horizon · your daily founder briefing');
     const body = parts.join('\n\n');
 
-    const subject = featured.length > 0
-        ? `${featured.map(b => b.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '')).join(' + ')} briefing — `
-          + (totals.overdue ? `${totals.overdue} overdue, ` : '') + `${totals.dueThisWeek} due this week`
-        : `Founder briefing — ${totals.overdue} overdue, ${totals.dueThisWeek} due this week`;
-
     const summary = `${totals.overdue} overdue · ${totals.dueThisWeek} due this week across ${businesses.length} businesses`;
+
+    // HTML version
+    const restRowsHtml = restRows.length
+        ? `<div style="background:#ffffff;border:1px solid ${C.border};border-radius:14px;padding:14px 22px;margin:0 0 16px;">
+             <div style="font-size:11px;font-weight:700;letter-spacing:0.5px;color:${C.grey};margin-bottom:4px;">OTHER BUSINESSES</div>
+             <table cellpadding="0" cellspacing="0" style="width:100%;">${restRows.join('')}</table></div>`
+        : '';
+    const html = renderHtmlEmail({
+        dateLabel,
+        discussionNames: featured.length > 0 ? discussionNames : null,
+        moneyHtml: financeHtml(finance),
+        sectionHtml: sectionsHtml.join(''),
+        restRowsHtml,
+        summary,
+    });
+
+    const subject = featured.length > 0
+        ? `☀️ ${featured.map(b => b.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '')).join(' + ')} briefing — `
+          + (totals.overdue ? `${totals.overdue} overdue, ` : '') + `${totals.dueThisWeek} due this week`
+        : `☀️ Founder briefing — ${totals.overdue} overdue, ${totals.dueThisWeek} due this week`;
+
     const primaryEpicId = featured[0]?.epic._id || businesses[0].epic._id;
 
-    return { subject, body, summary, primaryEpicId, featuredCount: featured.length };
+    return { subject, body, html, summary, primaryEpicId, featuredCount: featured.length };
 }
 
 /** Send the briefing to all active members of one organization. */
@@ -209,6 +346,7 @@ async function sendBriefingForOrg(orgId, { allBusinesses = false } = {}) {
         recipientIds,
         subject: briefing.subject,
         body: briefing.body,
+        html: briefing.html,
     });
 
     await notifyUsers({

@@ -121,7 +121,7 @@ async function notifyUsers({ organizationId, recipientIds, actorId, type, title,
  * No notification documents are created here — pair with notifyUsers()
  * for the in-app copy. Respects each user's email preference.
  */
-async function emailUsers({ recipientIds, subject, body }) {
+async function emailUsers({ recipientIds, subject, body, html = null }) {
     if (!smtpTransport && !ses) return { sent: 0, skipped: 'no email transport' };
     const users = await HorizonUser.find({ _id: { $in: recipientIds } })
         .select('email name preferences');
@@ -136,12 +136,16 @@ async function emailUsers({ recipientIds, subject, body }) {
                     to: user.email,
                     subject,
                     text: body,
+                    ...(html ? { html } : {}),
                 });
             } else {
+                const Body = html
+                    ? { Html: { Data: html }, Text: { Data: body } }
+                    : { Text: { Data: body } };
                 await ses.sendEmail({
                     Source: `ScaleUp Horizon <${EMAIL_FROM}>`,
                     Destination: { ToAddresses: [user.email] },
-                    Message: { Subject: { Data: subject }, Body: { Text: { Data: body } } },
+                    Message: { Subject: { Data: subject }, Body },
                 }).promise();
             }
             sent += 1;
