@@ -3,55 +3,11 @@ const math = require('mathjs');
 const moment = require('moment');
 const mongoose = require('mongoose');
 
-// Updated CustomKPI model definition with multi-tenancy
-let CustomKPI;
-try {
-    CustomKPI = mongoose.model('CustomKPI');
-} catch (error) {
-    const kpiSchema = new mongoose.Schema({
-        // Multi-tenancy field
-        organization: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true },
-        
-        name: String,
-        displayName: String,
-        category: String,
-        formula: String,
-        formulaVariables: Array,
-        displayFormat: Object,
-        
-        // Track who created/modified within the organization
-        createdBy: mongoose.Schema.Types.ObjectId,
-        lastModifiedBy: mongoose.Schema.Types.ObjectId,
-        
-        cache: {
-            currentValue: Number,
-            previousValue: Number,
-            lastCalculated: Date,
-            trend: Number,
-            historicalValues: Array
-        },
-        targets: Array,
-        alerts: Array,
-        isActive: { type: Boolean, default: true },
-        isPinned: { type: Boolean, default: false },
-        visualization: Object,
-        
-        // Organization-level settings
-        visibility: {
-            type: String,
-            enum: ['all', 'admins', 'custom'],
-            default: 'all'
-        },
-        allowedRoles: [{ type: String }], // If visibility is 'custom'
-    }, { timestamps: true });
-    
-    // Indexes for performance
-    kpiSchema.index({ organization: 1, name: 1 }, { unique: true });
-    kpiSchema.index({ organization: 1, isActive: 1, isPinned: 1 });
-    kpiSchema.index({ organization: 1, category: 1 });
-    
-    CustomKPI = mongoose.model('CustomKPI', kpiSchema);
-}
+// Single source of truth for the CustomKPI model. The service previously
+// defined a competing inline schema that won the model registration when
+// this file loaded first — leaving models/customKpiModel.js (the full
+// schema with enums, alert subdocs, etc.) inert in production.
+const CustomKPI = require('../models/customKpiModel');
 
 
 class CustomKPIService {
@@ -283,6 +239,9 @@ class CustomKPIService {
             });
             
             if (!kpi) throw new Error('KPI not found or unauthorized');
+
+            // Fresh documents have no cache subdocument yet
+            if (!kpi.cache) kpi.cache = {};
 
             // Get values for all variables with organization context.
             // Failures are collected as warnings and returned to the caller —
@@ -995,5 +954,6 @@ class CustomKPIService {
 
 module.exports = {
     CustomKPIService,
+    CustomKPI,
     customKPIService: new CustomKPIService()
 };

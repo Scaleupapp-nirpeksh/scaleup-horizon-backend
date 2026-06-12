@@ -41,7 +41,11 @@ const formulaVariableSchema = new mongoose.Schema({
         _id: false,
         start: { type: Date },
         end: { type: Date }
-    }
+    },
+    // For source 'constant' this holds the number; for 'custom_metric' it
+    // holds the referenced KPI's internal name. The calculation engine reads
+    // variable.value for both — without this path strict mode stripped it.
+    value: mongoose.Schema.Types.Mixed
 });
 
 const displayFormatSchema = new mongoose.Schema({
