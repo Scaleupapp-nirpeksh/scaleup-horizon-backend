@@ -322,3 +322,166 @@ exports.sendBriefing = async (req, res) => {
         res.status(500).send('Server Error: Could not send briefing');
     }
 };
+
+// ------------------------------------------------------------- portfolio
+
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function nextDiscussionDate(dayName, now) {
+    const target = DAY_NAMES.indexOf(dayName);
+    if (target === -1) return null;
+    const d = new Date(now);
+    const diff = (target - d.getDay() + 7) % 7; // 0 = today
+    d.setDate(d.getDate() + diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
+}
+
+/**
+ * @desc    Multi-venture portfolio view: one card per business epic with
+ *          task rollups, latest decision, last meeting and next discussion.
+ * @route   GET /api/horizon/dashboard/portfolio
+ * @access  Private (requires active organization)
+ */
+exports.getPortfolio = async (req, res) => {
+    try {
+        const Meeting = require('../models/meetingModel');
+        const Decision = require('../models/decisionModel');
+        const orgId = req.organization._id;
+        const now = new Date();
+        const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0);
+        const endOfWeek = new Date(startOfToday); endOfWeek.setDate(endOfWeek.getDate() + 7);
+        const sevenDaysAgo = new Date(now); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const epics = await Task.find({ organization: orgId, isArchived: false, taskType: 'epic' })
+            .select('title taskKey description status dueDate parentTask createdAt')
+            .sort({ createdAt: 1 });
+
+        // "Businesses" are leaf epics — epics without child epics (the master
+        // portfolio epic groups the real businesses underneath it)
+        const epicIds = new Set(epics.map(e => String(e._id)));
+        const hasEpicChildren = new Set(
+            epics.filter(e => e.parentTask && epicIds.has(String(e.parentTask))).map(e => String(e.parentTask)));
+        const businesses = epics.filter(e => !hasEpicChildren.has(String(e._id)));
+        const bizIds = businesses.map(b => b._id);
+
+        const [taskStats, latestDecisions, decisionCounts, lastMeetings] = await Promise.all([
+            Task.aggregate([
+                { $match: { organization: orgId, isArchived: false, taskType: 'task', parentTask: { $in: bizIds } } },
+                {
+                    $group: {
+                        _id: '$parentTask',
+                        total: { $sum: 1 },
+                        completed: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
+                        open: { $sum: { $cond: [{ $not: [{ $in: ['$status', ['completed', 'cancelled']] }] }, 1, 0] } },
+                        overdue: {
+                            $sum: {
+                                $cond: [{
+                                    $and: [
+                                        { $not: [{ $in: ['$status', ['completed', 'cancelled']] }] },
+                                        { $ne: ['$dueDate', null] },
+                                        { $lt: ['$dueDate', startOfToday] }
+                                    ]
+                                }, 1, 0]
+                            }
+                        },
+                        dueThisWeek: {
+                            $sum: {
+                                $cond: [{
+                                    $and: [
+                                        { $not: [{ $in: ['$status', ['completed', 'cancelled']] }] },
+                                        { $ne: ['$dueDate', null] },
+                                        { $gte: ['$dueDate', startOfToday] },
+                                        { $lt: ['$dueDate', endOfWeek] }
+                                    ]
+                                }, 1, 0]
+                            }
+                        },
+                        blocked: { $sum: { $cond: [{ $eq: ['$status', 'blocked'] }, 1, 0] } },
+                        stalled: {
+                            $sum: {
+                                $cond: [{
+                                    $and: [
+                                        { $eq: ['$status', 'in_progress'] },
+                                        { $lt: ['$updatedAt', sevenDaysAgo] }
+                                    ]
+                                }, 1, 0]
+                            }
+                        },
+                        completedLast7: {
+                            $sum: {
+                                $cond: [{
+                                    $and: [
+                                        { $eq: ['$status', 'completed'] },
+                                        { $gte: ['$completedAt', sevenDaysAgo] }
+                                    ]
+                                }, 1, 0]
+                            }
+                        },
+                    }
+                }
+            ]),
+            Decision.aggregate([
+                { $match: { organization: orgId, epic: { $in: bizIds } } },
+                { $sort: { decidedAt: -1 } },
+                { $group: { _id: '$epic', decision: { $first: '$decision' }, decidedAt: { $first: '$decidedAt' } } }
+            ]),
+            Decision.aggregate([
+                { $match: { organization: orgId, epic: { $in: bizIds }, decidedAt: { $gte: thirtyDaysAgo } } },
+                { $group: { _id: '$epic', count: { $sum: 1 } } }
+            ]),
+            Meeting.aggregate([
+                { $match: { organization: orgId, epic: { $in: bizIds }, status: 'ended' } },
+                { $sort: { endedAt: -1 } },
+                { $group: { _id: '$epic', title: { $first: '$title' }, endedAt: { $first: '$endedAt' } } }
+            ]),
+        ]);
+
+        const statsMap = Object.fromEntries(taskStats.map(t => [String(t._id), t]));
+        const latestDecisionMap = Object.fromEntries(latestDecisions.map(d => [String(d._id), d]));
+        const decisionCountMap = Object.fromEntries(decisionCounts.map(d => [String(d._id), d.count]));
+        const meetingMap = Object.fromEntries(lastMeetings.map(m => [String(m._id), m]));
+
+        const cards = businesses.map(b => {
+            const s = statsMap[String(b._id)] || {
+                total: 0, completed: 0, open: 0, overdue: 0,
+                dueThisWeek: 0, blocked: 0, stalled: 0, completedLast7: 0,
+            };
+            const discussionDay = parseDiscussionDay(b.description);
+            return {
+                _id: b._id,
+                title: b.title,
+                taskKey: b.taskKey,
+                status: b.status,
+                dueDate: b.dueDate,
+                discussionDay,
+                nextDiscussion: discussionDay ? nextDiscussionDate(discussionDay, now) : null,
+                tasks: {
+                    total: s.total, completed: s.completed, open: s.open,
+                    overdue: s.overdue, dueThisWeek: s.dueThisWeek,
+                    blocked: s.blocked, stalled: s.stalled, completedLast7: s.completedLast7,
+                    percentComplete: s.total > 0 ? Math.round((s.completed / s.total) * 100) : 0,
+                },
+                latestDecision: latestDecisionMap[String(b._id)] || null,
+                decisionsLast30: decisionCountMap[String(b._id)] || 0,
+                lastMeeting: meetingMap[String(b._id)] || null,
+            };
+        });
+
+        res.json({
+            generatedAt: now,
+            businesses: cards,
+            totals: {
+                businesses: cards.length,
+                open: cards.reduce((a, c) => a + c.tasks.open, 0),
+                overdue: cards.reduce((a, c) => a + c.tasks.overdue, 0),
+                completedLast7: cards.reduce((a, c) => a + c.tasks.completedLast7, 0),
+                decisionsLast30: cards.reduce((a, c) => a + c.decisionsLast30, 0),
+            },
+        });
+    } catch (err) {
+        console.error('Error building portfolio:', err.message, err.stack);
+        res.status(500).send('Server Error: Could not build portfolio view');
+    }
+};

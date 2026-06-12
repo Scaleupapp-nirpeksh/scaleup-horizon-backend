@@ -8,6 +8,7 @@ router.use(protect);
 router.use(requireActiveOrganization);
 
 router.get('/command-center', dashboardController.getCommandCenter);
+router.get('/portfolio', dashboardController.getPortfolio);
 router.get('/briefing/preview', dashboardController.previewBriefing);
 router.post('/briefing/send', dashboardController.sendBriefing);
 
