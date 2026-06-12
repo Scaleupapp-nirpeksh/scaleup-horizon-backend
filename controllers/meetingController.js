@@ -196,7 +196,7 @@ exports.addActionItem = async (req, res) => {
 
         const task = new Task({
             organization: req.organization._id,
-            createdBy: req.user._id,
+            creator: req.user._id,
             title: String(req.body.title).trim(),
             description: `Action item from meeting "${meeting.title}".`,
             parentTask: meeting.epic || null,
