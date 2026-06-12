@@ -329,10 +329,8 @@ async function buildBriefing(orgId, { allBusinesses = false } = {}) {
         summary,
     });
 
-    const subject = featured.length > 0
-        ? `${featured.map(b => b.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '')).join(' + ')} briefing — `
-          + (totals.overdue ? `${totals.overdue} overdue, ` : '') + `${totals.dueThisWeek} due this week`
-        : `Founder briefing — ${totals.overdue} overdue, ${totals.dueThisWeek} due this week`;
+    // Generic subject: just the counts, never the business names
+    const subject = `Founder Briefing — ${totals.overdue} overdue · ${totals.dueThisWeek} due this week`;
 
     const primaryEpicId = featured[0]?.epic._id || businesses[0].epic._id;
 
