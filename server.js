@@ -89,6 +89,7 @@ app.use('/api/horizon/investor-meetings', investorMeetingRoutes);
 app.use('/api/horizon/organizations', organizationRoutes);
 app.use('/api/horizon/tasks', taskRoutes);
 app.use('/api/horizon/notifications', require('./routes/notificationRoutes'));
+app.use('/api/horizon/dashboard', require('./routes/dashboardRoutes'));
 
 // New enhanced features routes
 app.use('/api/horizon/enhanced', enhancedRoutes);
