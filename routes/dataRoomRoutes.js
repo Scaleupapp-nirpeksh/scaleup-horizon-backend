@@ -13,6 +13,10 @@ router.use(protect);
 router.use(requireActiveOrganization);
 const member = authorizeOrganizationRole(['owner', 'member']);
 
+// Link library (before /:id so the path never collides)
+router.get('/links/library', member, dataRoomController.getLinkLibrary);
+router.delete('/links/library/:id', member, dataRoomController.deleteSavedLink);
+
 router.post('/', member, dataRoomController.createDataRoom);
 router.get('/', member, dataRoomController.getDataRooms);
 router.get('/:id', member, dataRoomController.getDataRoomById);

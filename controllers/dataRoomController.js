@@ -7,6 +7,9 @@ const AWS = require('aws-sdk');
 const DataRoom = require('../models/dataRoomModel');
 const Document = require('../models/documentModel');
 const Organization = require('../models/organizationModel');
+const Membership = require('../models/membershipModel');
+const SavedLink = require('../models/savedLinkModel');
+const { notifyUsers } = require('../services/notificationService');
 
 const s3 = new AWS.S3({
     accessKeyId: process.env.HORIZON_AWS_ACCESS_KEY_ID,
@@ -18,6 +21,44 @@ const BUCKET = process.env.HORIZON_S3_BUCKET_NAME || 'scaleup-horizon-documents'
 const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const newToken = () => crypto.randomBytes(24).toString('hex');
 const MAX_LOG = 1000;
+
+function sanitizeLinks(links) {
+    if (!Array.isArray(links)) return [];
+    return links
+        .filter(l => l && String(l.title || '').trim() && /^https?:\/\/.+/i.test(String(l.url || '').trim()))
+        .slice(0, 20)
+        .map(l => ({
+            title: String(l.title).trim().slice(0, 200),
+            url: String(l.url).trim().slice(0, 2000),
+            description: l.description ? String(l.description).trim().slice(0, 500) : undefined,
+        }));
+}
+
+// Any link used in a room is remembered in the org's link library so it can
+// be re-picked next time — mirrors how documents work
+function upsertLinkLibrary(orgId, userId, links) {
+    Promise.allSettled((links || []).map(l =>
+        SavedLink.updateOne(
+            { organization: orgId, url: l.url },
+            { $set: { title: l.title, description: l.description }, $setOnInsert: { addedBy: userId } },
+            { upsert: true }
+        )
+    )).catch(() => {});
+}
+
+// Fire-and-forget: tell the founders someone is in their data room
+function notifyRoomActivity(room, { title, message, email = false }) {
+    Membership.find({ organization: room.organization, status: 'active' }).select('user')
+        .then(members => notifyUsers({
+            organizationId: room.organization,
+            recipientIds: members.map(m => m.user),
+            type: 'system',
+            title,
+            message,
+            email,
+        }))
+        .catch(err => console.error('Data room notification failed:', err.message));
+}
 
 async function resolveOrgDocuments(orgId, documentIds) {
     const ids = (documentIds || []).filter(isId);
@@ -40,16 +81,19 @@ exports.createDataRoom = async (req, res) => {
         if (!req.body.name || !String(req.body.name).trim()) {
             return res.status(400).json({ msg: 'Data room name is required' });
         }
+        const links = sanitizeLinks(req.body.links);
         const room = await DataRoom.create({
             organization: req.organization._id,
             createdBy: req.user._id,
             name: String(req.body.name).trim(),
             description: req.body.description,
             documents: await resolveOrgDocuments(req.organization._id, req.body.documentIds),
+            links,
             shareToken: newToken(),
             requireEmail: req.body.requireEmail !== false,
             expiresAt: req.body.expiresAt ? new Date(req.body.expiresAt) : null,
         });
+        upsertLinkLibrary(req.organization._id, req.user._id, links);
         res.status(201).json({ msg: 'Data room created', dataRoom: room });
     } catch (err) {
         console.error('Error creating data room:', err.message);
@@ -109,6 +153,10 @@ exports.updateDataRoom = async (req, res) => {
         if (req.body.documentIds !== undefined) {
             room.documents = await resolveOrgDocuments(req.organization._id, req.body.documentIds);
         }
+        if (req.body.links !== undefined) {
+            room.links = sanitizeLinks(req.body.links);
+            upsertLinkLibrary(req.organization._id, req.user._id, room.links);
+        }
         if (req.body.requireEmail !== undefined) room.requireEmail = !!req.body.requireEmail;
         if (req.body.isActive !== undefined) room.isActive = !!req.body.isActive;
         if (req.body.expiresAt !== undefined) {
@@ -157,6 +205,36 @@ exports.deleteDataRoom = async (req, res) => {
     }
 };
 
+/**
+ * @desc    The org's reusable link library (offered in the room builder)
+ * @route   GET /api/horizon/data-rooms/links/library
+ */
+exports.getLinkLibrary = async (req, res) => {
+    try {
+        const links = await SavedLink.find({ organization: req.organization._id }).sort({ createdAt: 1 });
+        res.json({ links });
+    } catch (err) {
+        console.error('Error fetching link library:', err.message);
+        res.status(500).send('Server Error: Could not fetch link library');
+    }
+};
+
+/**
+ * @desc    Remove a link from the library (existing rooms keep their copy)
+ * @route   DELETE /api/horizon/data-rooms/links/library/:id
+ */
+exports.deleteSavedLink = async (req, res) => {
+    try {
+        if (!isId(req.params.id)) return res.status(400).json({ msg: 'Invalid link ID format' });
+        const link = await SavedLink.findOneAndDelete({ _id: req.params.id, organization: req.organization._id });
+        if (!link) return res.status(404).json({ msg: 'Saved link not found in your organization' });
+        res.json({ msg: 'Saved link removed' });
+    } catch (err) {
+        console.error('Error deleting saved link:', err.message);
+        res.status(500).send('Server Error: Could not delete saved link');
+    }
+};
+
 // ----------------------------------------------------------- public side
 
 function publicDocList(room) {
@@ -195,6 +273,7 @@ exports.publicGetRoom = async (req, res) => {
             organizationName: org ? org.name : '',
             requireEmail: room.requireEmail,
             documentCount: (room.documents || []).length,
+            linkCount: (room.links || []).length,
         });
     } catch (err) {
         console.error('Error fetching public data room:', err.message);
@@ -223,7 +302,18 @@ exports.publicEnterRoom = async (req, res) => {
         room.viewCount += 1;
         await room.save();
 
-        res.json({ name: room.name, description: room.description || '', documents: publicDocList(room) });
+        notifyRoomActivity(room, {
+            title: `Data room "${room.name}" opened`,
+            message: `${email || 'An anonymous visitor'} is viewing your data room.`,
+            email: true,
+        });
+
+        res.json({
+            name: room.name,
+            description: room.description || '',
+            documents: publicDocList(room),
+            links: (room.links || []).map(l => ({ id: l._id, title: l.title, url: l.url, description: l.description || '' })),
+        });
     } catch (err) {
         console.error('Error entering public data room:', err.message);
         res.status(500).send('Server Error');
@@ -262,9 +352,48 @@ exports.publicDownloadDoc = async (req, res) => {
         logAccess(room, { action: 'download_doc', email: email || undefined, documentId: doc._id, fileName: doc.fileName, ip: req.ip });
         await room.save();
 
+        notifyRoomActivity(room, {
+            title: `"${doc.fileName}" downloaded from data room "${room.name}"`,
+            message: `${email || 'An anonymous visitor'} downloaded the document.`,
+        });
+
         res.json({ downloadUrl, fileName: doc.fileName });
     } catch (err) {
         console.error('Error issuing data room download:', err.message);
+        res.status(500).send('Server Error');
+    }
+};
+
+/**
+ * @desc    Tracked visit to an external link in the room (website, pitch site)
+ * @route   POST /api/horizon/public/data-rooms/:token/links/:linkId/visit
+ * @body    { email? }
+ * @access  Public
+ */
+exports.publicVisitLink = async (req, res) => {
+    try {
+        const room = await DataRoom.findOne({ shareToken: req.params.token });
+        if (!room || !room.isOpen()) return res.status(404).json({ msg: 'This data room is unavailable.' });
+
+        const link = (room.links || []).find(l => String(l._id) === req.params.linkId);
+        if (!link) return res.status(404).json({ msg: 'Link is not part of this data room' });
+
+        const email = String(req.body.email || '').trim().toLowerCase();
+        if (room.requireEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            return res.status(400).json({ msg: 'A valid email is required' });
+        }
+
+        logAccess(room, { action: 'view_link', email: email || undefined, fileName: link.title, linkUrl: link.url, ip: req.ip });
+        await room.save();
+
+        notifyRoomActivity(room, {
+            title: `"${link.title}" visited from data room "${room.name}"`,
+            message: `${email || 'An anonymous visitor'} opened ${link.url}`,
+        });
+
+        res.json({ url: link.url });
+    } catch (err) {
+        console.error('Error logging data room link visit:', err.message);
         res.status(500).send('Server Error');
     }
 };

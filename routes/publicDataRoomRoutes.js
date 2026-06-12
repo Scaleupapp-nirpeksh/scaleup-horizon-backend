@@ -17,5 +17,6 @@ router.use(publicLimiter);
 router.get('/:token', dataRoomController.publicGetRoom);
 router.post('/:token/enter', dataRoomController.publicEnterRoom);
 router.post('/:token/documents/:docId/download', dataRoomController.publicDownloadDoc);
+router.post('/:token/links/:linkId/visit', dataRoomController.publicVisitLink);
 
 module.exports = router;
