@@ -385,4 +385,44 @@ async function runDailyBriefings() {
     return results;
 }
 
-module.exports = { buildBriefing, sendBriefingForOrg, runDailyBriefings };
+/**
+ * Daily investor follow-up reminders: one in-app + email notification per
+ * org listing investors whose nextFollowUpDate is today or overdue.
+ */
+async function runDailyFollowUpReminders() {
+    const Investor = require('../models/investorModel');
+    const endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999);
+
+    const due = await Investor.find({
+        nextFollowUpDate: { $ne: null, $lte: endOfToday },
+        status: { $nin: ['Invested', 'Declined', 'Passed'] },
+    }).select('name organization nextFollowUpDate status');
+
+    const byOrg = {};
+    due.forEach(inv => {
+        (byOrg[String(inv.organization)] = byOrg[String(inv.organization)] || []).push(inv);
+    });
+
+    for (const [orgId, investors] of Object.entries(byOrg)) {
+        try {
+            const members = await Membership.find({ organization: orgId, status: 'active' }).select('user');
+            const names = investors.slice(0, 8).map(i =>
+                `• ${i.name} (${i.status}${i.nextFollowUpDate < new Date(new Date().setHours(0, 0, 0, 0)) ? ' — overdue' : ''})`
+            ).join('\n');
+            await notifyUsers({
+                organizationId: orgId,
+                recipientIds: members.map(m => m.user),
+                actorId: null,
+                type: 'system',
+                title: `${investors.length} investor follow-up${investors.length === 1 ? '' : 's'} due`,
+                message: names + (investors.length > 8 ? `\n…and ${investors.length - 8} more` : '')
+                    + `\n\nPipeline: ${FRONTEND_URL}/fundraising`,
+            });
+        } catch (err) {
+            console.error(`Follow-up reminders failed for org ${orgId}:`, err.message);
+        }
+    }
+    if (due.length) console.log(`Investor follow-up reminders: ${due.length} due across ${Object.keys(byOrg).length} org(s)`);
+}
+
+module.exports = { buildBriefing, sendBriefingForOrg, runDailyBriefings, runDailyFollowUpReminders };

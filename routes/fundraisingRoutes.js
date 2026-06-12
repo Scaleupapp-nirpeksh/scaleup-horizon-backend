@@ -154,9 +154,22 @@ router.get('/investors/:id',
  * @route   PUT /api/horizon/fundraising/investors/:id
  * @access  Private (owner, member)
  */
-router.put('/investors/:id', 
-    authorizeOrganizationRole(['owner', 'member']), 
+router.put('/investors/:id',
+    authorizeOrganizationRole(['owner', 'member']),
     fundraisingController.updateInvestor
+);
+
+// --- Pipeline CRM (lightweight: stage moves, follow-ups, interaction log) ---
+const investorCrmController = require('../controllers/investorCrmController');
+
+router.patch('/investors/:id/pipeline',
+    authorizeOrganizationRole(['owner', 'member']),
+    investorCrmController.updatePipeline
+);
+
+router.post('/investors/:id/interactions',
+    authorizeOrganizationRole(['owner', 'member']),
+    investorCrmController.addInteraction
 );
 
 /**

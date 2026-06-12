@@ -105,6 +105,20 @@ const investorSchema = new mongoose.Schema({
     },
     notes: { type: String, trim: true },
 
+    // --- PIPELINE CRM FIELDS ---
+    nextFollowUpDate: { type: Date, default: null, index: true },
+    lastContactedAt: { type: Date, default: null },
+    interactions: [{
+        date: { type: Date, default: Date.now },
+        type: {
+            type: String,
+            enum: ['call', 'email', 'meeting', 'whatsapp', 'note'],
+            default: 'note',
+        },
+        summary: { type: String, required: true, trim: true, maxlength: 2000 },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'HorizonUser' },
+    }],
+
     // --- NEW EQUITY CALCULATION FIELDS ---
     equityPercentageAllocated: {
         type: Number,

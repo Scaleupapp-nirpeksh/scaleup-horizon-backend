@@ -90,6 +90,7 @@ app.use('/api/horizon/organizations', organizationRoutes);
 app.use('/api/horizon/tasks', taskRoutes);
 app.use('/api/horizon/notifications', require('./routes/notificationRoutes'));
 app.use('/api/horizon/dashboard', require('./routes/dashboardRoutes'));
+app.use('/api/horizon/investor-updates', require('./routes/investorUpdateRoutes'));
 
 // New enhanced features routes
 app.use('/api/horizon/enhanced', enhancedRoutes);
@@ -296,8 +297,9 @@ function setupCronJobs() {
     cron.schedule('30 7 * * *', async () => {
         console.log('Running daily founder briefings...');
         try {
-            const { runDailyBriefings } = require('./services/briefingService');
+            const { runDailyBriefings, runDailyFollowUpReminders } = require('./services/briefingService');
             await runDailyBriefings();
+            await runDailyFollowUpReminders();
         } catch (error) {
             console.error('Error in daily founder briefings:', error);
         }

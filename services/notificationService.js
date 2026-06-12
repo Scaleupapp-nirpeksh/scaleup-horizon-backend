@@ -156,4 +156,38 @@ async function emailUsers({ recipientIds, subject, body, html = null }) {
     return { sent };
 }
 
-module.exports = { notifyUsers, emailUsers, taskUrl };
+/**
+ * Send one email to an arbitrary external address (e.g. an investor).
+ * Returns true on transport acceptance, false otherwise.
+ */
+async function sendEmailRaw({ to, subject, body, html = null, replyTo = null }) {
+    if ((!smtpTransport && !ses) || !to) return false;
+    try {
+        if (smtpTransport) {
+            await smtpTransport.sendMail({
+                from: `ScaleUp Horizon <${EMAIL_FROM}>`,
+                to,
+                subject,
+                text: body,
+                ...(html ? { html } : {}),
+                ...(replyTo ? { replyTo } : {}),
+            });
+        } else {
+            const Body = html
+                ? { Html: { Data: html }, Text: { Data: body } }
+                : { Text: { Data: body } };
+            await ses.sendEmail({
+                Source: `ScaleUp Horizon <${EMAIL_FROM}>`,
+                Destination: { ToAddresses: [to] },
+                Message: { Subject: { Data: subject }, Body },
+                ...(replyTo ? { ReplyToAddresses: [replyTo] } : {}),
+            }).promise();
+        }
+        return true;
+    } catch (err) {
+        console.error(`Raw email to ${to} failed: ${err.message}`);
+        return false;
+    }
+}
+
+module.exports = { notifyUsers, emailUsers, sendEmailRaw, taskUrl };
