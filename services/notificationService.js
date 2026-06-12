@@ -1,24 +1,41 @@
 // services/notificationService.js
-// Creates in-app notifications and (best-effort) sends email copies via
-// AWS SES. Email is enabled by setting NOTIFY_EMAIL_FROM to a SES-verified
-// sender; if unset or a send fails, in-app notifications still work.
+// Creates in-app notifications and (best-effort) sends email copies.
+// Email transports, in order of preference:
+//   1. SMTP (e.g. Gmail) — set SMTP_HOST / SMTP_USER / SMTP_PASS. Can send
+//      to any recipient (no SES sandbox restrictions).
+//   2. AWS SES — set NOTIFY_EMAIL_FROM to a SES-verified sender.
+// If neither is configured or a send fails, in-app notifications still work.
 const AWS = require('aws-sdk');
+const nodemailer = require('nodemailer');
 const Notification = require('../models/notificationModel');
 const HorizonUser = require('../models/userModel');
 
-const EMAIL_FROM = process.env.NOTIFY_EMAIL_FROM || null;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.scaleuphorizon.com';
 
+let smtpTransport = null;
 let ses = null;
-if (EMAIL_FROM) {
+let EMAIL_FROM = null;
+
+if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    const port = parseInt(process.env.SMTP_PORT, 10) || 587;
+    smtpTransport = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port,
+        secure: port === 465,
+        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+    EMAIL_FROM = process.env.NOTIFY_EMAIL_FROM || process.env.SMTP_USER;
+    console.log(`Notification emails enabled via SMTP ${process.env.SMTP_HOST} (from ${EMAIL_FROM})`);
+} else if (process.env.NOTIFY_EMAIL_FROM) {
+    EMAIL_FROM = process.env.NOTIFY_EMAIL_FROM;
     ses = new AWS.SES({
         region: process.env.HORIZON_AWS_REGION || 'ap-south-1',
         accessKeyId: process.env.HORIZON_AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.HORIZON_AWS_SECRET_ACCESS_KEY,
     });
-    console.log(`Notification emails enabled (from ${EMAIL_FROM})`);
+    console.log(`Notification emails enabled via SES (from ${EMAIL_FROM})`);
 } else {
-    console.log('NOTIFY_EMAIL_FROM not set — notifications are in-app only');
+    console.log('No email transport configured — notifications are in-app only');
 }
 
 function taskUrl(taskId) {
@@ -26,23 +43,30 @@ function taskUrl(taskId) {
 }
 
 async function sendEmail(user, title, message, taskId) {
-    if (!ses || !user.email) return;
+    if ((!smtpTransport && !ses) || !user.email) return;
     if (user.preferences?.notifications?.emailEnabled === false) return;
+
+    const body = `${message || title}\n\nOpen in ScaleUp Horizon: ${taskUrl(taskId)}\n\n—\nYou are receiving this because of activity on a task you are involved in.`;
+
     try {
-        await ses.sendEmail({
-            Source: `ScaleUp Horizon <${EMAIL_FROM}>`,
-            Destination: { ToAddresses: [user.email] },
-            Message: {
-                Subject: { Data: title },
-                Body: {
-                    Text: {
-                        Data: `${message || title}\n\nOpen in ScaleUp Horizon: ${taskUrl(taskId)}\n\n—\nYou are receiving this because of activity on a task you are involved in.`,
-                    },
+        if (smtpTransport) {
+            await smtpTransport.sendMail({
+                from: `ScaleUp Horizon <${EMAIL_FROM}>`,
+                to: user.email,
+                subject: title,
+                text: body,
+            });
+        } else {
+            await ses.sendEmail({
+                Source: `ScaleUp Horizon <${EMAIL_FROM}>`,
+                Destination: { ToAddresses: [user.email] },
+                Message: {
+                    Subject: { Data: title },
+                    Body: { Text: { Data: body } },
                 },
-            },
-        }).promise();
+            }).promise();
+        }
     } catch (err) {
-        // Common in SES sandbox mode when the recipient is not yet verified
         console.error(`Notification email to ${user.email} failed: ${err.message}`);
     }
 }
