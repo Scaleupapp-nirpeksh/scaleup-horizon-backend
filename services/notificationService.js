@@ -85,6 +85,23 @@ async function sendEmail(user, title, message, taskId) {
  * @param {ObjectId|string|null} [opts.taskId]
  * @param {boolean} [opts.email=true] - also send an email copy
  */
+// Push to all registered devices of the given users (no-op if APNs unset).
+async function pushToUsers(recipientIds, { title, message, taskId }) {
+    const apns = require('./apnsService');
+    if (!apns.configured()) return;
+    const Device = require('../models/deviceModel');
+    const devices = await Device.find({ user: { $in: recipientIds } }).select('token environment');
+    if (devices.length === 0) return;
+
+    const data = taskId ? { taskId: String(taskId) } : {};
+    await Promise.allSettled(devices.map(async (d) => {
+        const result = await apns.sendPush({ token: d.token, title, body: message, data, environment: d.environment });
+        if (result.unregistered) {
+            await Device.deleteOne({ _id: d._id }).catch(() => {});
+        }
+    }));
+}
+
 async function notifyUsers({ organizationId, recipientIds, actorId, type, title, message, taskId = null, email = true }) {
     try {
         const recipients = [...new Set((recipientIds || []).filter(Boolean).map(String))]
@@ -107,6 +124,10 @@ async function notifyUsers({ organizationId, recipientIds, actorId, type, title,
                 .then(users => Promise.allSettled(users.map(u => sendEmail(u, title, message, taskId))))
                 .catch(err => console.error('Notification email batch failed:', err.message));
         }
+
+        // Fire-and-forget push to every registered device of the recipients.
+        pushToUsers(recipients, { title, message, taskId })
+            .catch(err => console.error('Notification push batch failed:', err.message));
 
         return docs;
     } catch (err) {

@@ -94,6 +94,7 @@ app.use('/api/horizon/notifications', require('./routes/notificationRoutes'));
 app.use('/api/horizon/dashboard', require('./routes/dashboardRoutes'));
 app.use('/api/horizon/investor-updates', require('./routes/investorUpdateRoutes'));
 app.use('/api/horizon/meetings', require('./routes/meetingRoutes'));
+app.use('/api/horizon/devices', require('./routes/deviceRoutes'));
 app.use('/api/horizon/chief-of-staff', require('./routes/chiefOfStaffRoutes'));
 app.use('/api/horizon/data-rooms', require('./routes/dataRoomRoutes'));
 app.use('/api/horizon/outreach', require('./routes/outreachRoutes'));
