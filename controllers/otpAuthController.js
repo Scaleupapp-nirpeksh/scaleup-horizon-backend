@@ -7,10 +7,15 @@ const Membership = require('../models/membershipModel');
 const otpService = require('../services/otpService');
 
 const JWT_SECRET = process.env.HORIZON_JWT_SECRET;
-const JWT_EXPIRATION = process.env.HORIZON_JWT_EXPIRATION || '30d';
 
+// Token payload MUST match what the `protect` middleware reads:
+// decoded.user.id and decoded.activeOrganizationId.
 function generateToken(userId, activeOrganizationId = null) {
-    return jwt.sign({ id: userId, activeOrganization: activeOrganizationId }, JWT_SECRET, { expiresIn: JWT_EXPIRATION });
+    return jwt.sign(
+        { user: { id: userId }, activeOrganizationId },
+        JWT_SECRET,
+        { expiresIn: process.env.JWT_EXPIRES_IN || process.env.HORIZON_JWT_EXPIRATION || '5h' }
+    );
 }
 
 // Builds the exact same response body as POST /auth/login.
