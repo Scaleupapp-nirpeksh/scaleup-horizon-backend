@@ -162,6 +162,110 @@ async function collectEpicData(orgId, epic, now) {
     };
 }
 
+// How many days ahead "due soon" looks (a couple of days beyond today).
+const UPCOMING_DAYS = 2;
+
+/**
+ * Org-wide action snapshot — the heart of the daily brief, grouped by business
+ * epic. Per business: overdue, due today, due in the next couple of days, and
+ * tasks whose start date is today (what to begin working on).
+ */
+async function collectActionData(orgId, now) {
+    const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(now); endOfToday.setHours(23, 59, 59, 999);
+    const soonStart = new Date(startOfToday); soonStart.setDate(soonStart.getDate() + 1);
+    const soonEnd = new Date(startOfToday); soonEnd.setDate(soonEnd.getDate() + 1 + UPCOMING_DAYS); // exclusive
+
+    const base = { organization: orgId, isArchived: false, status: OPEN, taskType: { $ne: 'epic' } };
+    const sel = 'title taskKey status dueDate startDate priority parentTask';
+    const pop = { path: 'parentTask', select: 'title taskKey' };
+
+    const [overdue, dueToday, dueSoon, startingToday] = await Promise.all([
+        Task.find({ ...base, dueDate: { $lt: startOfToday } }).select(sel).populate(pop).sort({ dueDate: 1 }).limit(40),
+        Task.find({ ...base, dueDate: { $gte: startOfToday, $lte: endOfToday } }).select(sel).populate(pop).sort({ priority: 1 }).limit(40),
+        Task.find({ ...base, dueDate: { $gte: soonStart, $lt: soonEnd } }).select(sel).populate(pop).sort({ dueDate: 1 }).limit(40),
+        Task.find({ ...base, startDate: { $gte: startOfToday, $lte: endOfToday } }).select(sel).populate(pop).sort({ priority: 1 }).limit(40),
+    ]);
+
+    // A task due today that also starts today belongs under "due today" only.
+    const dueTodayIds = new Set(dueToday.map(t => String(t._id)));
+    const startsOnly = startingToday.filter(t => !dueTodayIds.has(String(t._id)));
+
+    // Group every bucket under its business epic.
+    const groups = new Map(); // key -> { name, overdue, dueToday, dueSoon, startToday }
+    const NONE = '__none__';
+    const bizName = (t) => t.parentTask?.title
+        ? t.parentTask.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '')
+        : 'Unscoped tasks';
+    const slot = (t) => {
+        const key = t.parentTask?._id ? String(t.parentTask._id) : NONE;
+        if (!groups.has(key)) groups.set(key, { name: bizName(t), overdue: [], dueToday: [], dueSoon: [], startToday: [] });
+        return groups.get(key);
+    };
+    overdue.forEach(t => slot(t).overdue.push(t));
+    dueToday.forEach(t => slot(t).dueToday.push(t));
+    dueSoon.forEach(t => slot(t).dueSoon.push(t));
+    startsOnly.forEach(t => slot(t).startToday.push(t));
+
+    const list = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const totals = {
+        overdue: overdue.length, dueToday: dueToday.length,
+        dueSoon: dueSoon.length, startToday: startsOnly.length,
+    };
+    return { groups: list, totals };
+}
+
+const fmtDue = (t) => t.dueDate ? ` — due ${fmtDate(t.dueDate)}` : '';
+const actLine = (t) => `    • ${t.taskKey ? t.taskKey + '  ' : ''}${t.title}${fmtDue(t)}`;
+
+function renderActionSection(action) {
+    const { groups, totals } = action;
+    if (!groups.length) {
+        return 'YOUR DAY — BY BUSINESS\n  Nothing due, starting, or overdue. Clear runway. 🎯';
+    }
+    const lines = [`YOUR DAY — BY BUSINESS  (${totals.dueToday} due today · ${totals.startToday} to start · ${totals.overdue} overdue · ${totals.dueSoon} due soon)`];
+    for (const g of groups) {
+        lines.push(`\n━━ ${g.name.toUpperCase()} ━━`);
+        if (g.overdue.length)  { lines.push(`  ⚠ OVERDUE (${g.overdue.length})`);  g.overdue.forEach(t => lines.push(actLine(t))); }
+        if (g.dueToday.length) { lines.push(`  DUE TODAY (${g.dueToday.length})`); g.dueToday.forEach(t => lines.push(actLine(t))); }
+        if (g.startToday.length){ lines.push(`  START TODAY (${g.startToday.length})`); g.startToday.forEach(t => lines.push(actLine(t))); }
+        if (g.dueSoon.length)  { lines.push(`  DUE IN NEXT ${UPCOMING_DAYS} DAYS (${g.dueSoon.length})`); g.dueSoon.forEach(t => lines.push(actLine(t))); }
+    }
+    return lines.join('\n');
+}
+
+function renderActionHtml(action) {
+    const { groups, totals } = action;
+    const row = (t, dot) => `<tr><td style="padding:5px 0;font-size:14px;border-bottom:1px solid ${C.greyBg};">
+        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${dot};margin-right:8px;"></span>
+        <a href="${FRONTEND_URL}/tasks?task=${t._id}" style="color:${C.text};font-weight:600;text-decoration:none;">${t.taskKey ? esc(t.taskKey) + ' ' : ''}${esc(t.title)}</a>
+        ${t.dueDate ? `<span style="font-size:12px;color:${C.greyLight};"> · due ${esc(fmtDate(t.dueDate))}</span>` : ''}</td></tr>`;
+    const sub = (label, color, items, dot) => items.length ? `
+        <div style="font-size:11px;font-weight:700;letter-spacing:.8px;color:${color};padding:8px 0 1px;">${label} (${items.length})</div>
+        <table cellpadding="0" cellspacing="0" style="width:100%;">${items.map(t => row(t, dot)).join('')}</table>` : '';
+
+    if (!groups.length) {
+        return `<div style="border:1px solid ${C.border};border-radius:8px;padding:14px 22px;margin:0 0 14px;">
+            <div style="font-size:12px;font-weight:700;letter-spacing:1px;color:${C.text};padding-bottom:6px;border-bottom:2px solid ${C.indigo};">YOUR DAY — BY BUSINESS</div>
+            <div style="font-size:14px;color:${C.grey};padding:8px 0;">Nothing due, starting, or overdue. Clear runway. 🎯</div></div>`;
+    }
+    const businessBlocks = groups.map(g => `
+        <div style="padding:10px 0 2px;">
+          <div style="font-size:13px;font-weight:800;color:${C.text};">${esc(g.name)}</div>
+          ${sub('⚠ OVERDUE', C.red, g.overdue, C.red)}
+          ${sub('DUE TODAY', C.indigo, g.dueToday, C.indigo)}
+          ${sub('START TODAY', C.green, g.startToday, C.green)}
+          ${sub(`DUE IN NEXT ${UPCOMING_DAYS} DAYS`, C.amber, g.dueSoon, C.amber)}
+        </div>`).join(`<div style="height:1px;background:${C.border};margin:6px 0;"></div>`);
+
+    return `<div style="border:1px solid ${C.border};border-radius:8px;padding:14px 22px;margin:0 0 14px;">
+        <div style="font-size:12px;font-weight:700;letter-spacing:1px;color:${C.text};padding-bottom:6px;border-bottom:2px solid ${C.indigo};">
+          YOUR DAY — BY BUSINESS
+          <span style="font-weight:500;color:${C.grey};"> · ${totals.dueToday} due today · ${totals.startToday} to start · ${totals.overdue} overdue · ${totals.dueSoon} due soon</span>
+        </div>
+        ${businessBlocks}</div>`;
+}
+
 function renderBusinessSection(d) {
     const name = d.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '');
     const lines = [];
@@ -311,6 +415,9 @@ async function buildBriefing(orgId, { allBusinesses = false } = {}) {
     }
 
     const finance = await financeData(orgId, now);
+    const action = await collectActionData(orgId, now);
+    const dueTodayCount = action.totals.dueToday;
+    const startTodayCount = action.totals.startToday;
     const dateLabel = now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
     const discussionNames = featured.map(b => b.epic.title.replace(/\s*[—-]\s*5-Month Plan.*$/i, '')).join(', ');
 
@@ -318,13 +425,13 @@ async function buildBriefing(orgId, { allBusinesses = false } = {}) {
     const header = featured.length > 0
         ? `Founder Briefing — ${dateLabel}\nToday's discussion: ${discussionNames}`
         : `Founder Briefing — ${dateLabel}`;
-    const parts = [header, financeText(finance), ...sections];
+    const parts = [header, renderActionSection(action), financeText(finance), ...sections];
     if (restLines.length) parts.push('OTHER BUSINESSES\n' + restLines.join('\n'));
     parts.push(`Open your command center: ${FRONTEND_URL}/dashboard`);
     parts.push('—\nScaleUp Horizon · your daily founder briefing');
     const body = parts.join('\n\n');
 
-    const summary = `${totals.overdue} overdue · ${totals.dueThisWeek} due this week across ${businesses.length} businesses`;
+    const summary = `${dueTodayCount} due today · ${totals.overdue} overdue · ${totals.dueThisWeek} due this week`;
 
     // HTML version
     const restRowsHtml = restRows.length
@@ -336,26 +443,26 @@ async function buildBriefing(orgId, { allBusinesses = false } = {}) {
         dateLabel,
         discussionNames: featured.length > 0 ? discussionNames : null,
         moneyHtml: financeHtml(finance),
-        sectionHtml: sectionsHtml.join(''),
+        sectionHtml: renderActionHtml(action) + sectionsHtml.join(''),
         restRowsHtml,
         summary,
     });
 
-    // Generic subject: just the counts, never the business names
-    const subject = `Founder Briefing — ${totals.overdue} overdue · ${totals.dueThisWeek} due this week`;
+    // Generic subject: lead with today's actionable count, never business names
+    const subject = `Founder Briefing — ${dueTodayCount} due today · ${totals.overdue} overdue`;
 
     const primaryEpicId = featured[0]?.epic._id || businesses[0].epic._id;
 
-    return { subject, body, html, summary, primaryEpicId, featuredCount: featured.length };
+    return { subject, body, html, summary, primaryEpicId, featuredCount: featured.length, dueTodayCount, startTodayCount };
 }
 
 /** Send the briefing to all active members of one organization. */
 async function sendBriefingForOrg(orgId, { allBusinesses = false } = {}) {
     const briefing = await buildBriefing(orgId, { allBusinesses });
     if (!briefing) return { sent: 0, reason: 'no business epics' };
-    if (!allBusinesses && briefing.featuredCount === 0) {
-        return { sent: 0, reason: 'no business has its discussion day today' };
-    }
+    // The brief goes out EVERY morning — it always carries the "Today" section
+    // (due today / starting today / overdue). Businesses whose weekly discussion
+    // day is today additionally get their full deep-dive section.
 
     const members = await Membership.find({ organization: orgId, status: 'active' }).select('user');
     const recipientIds = members.map(m => m.user);

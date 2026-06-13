@@ -118,7 +118,9 @@ exports.createTask = async (req, res) => {
             priority,
             assignee,
             dueDate,
-            startDate,
+            // Default the start date to today when the caller doesn't specify one,
+            // so every task has a working window from the moment it's created.
+            startDate: startDate || new Date(),
             estimatedHours,
             parentTask,
             blockedBy,
