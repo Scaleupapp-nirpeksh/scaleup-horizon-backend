@@ -65,6 +65,8 @@ const credentialLimiter = rateLimit({
 app.use('/api/horizon/auth/login', credentialLimiter);
 app.use('/api/horizon/auth/register-owner', credentialLimiter);
 app.use('/api/horizon/auth/complete-setup', credentialLimiter);
+app.use('/api/horizon/auth/otp', credentialLimiter);
+app.use('/api/horizon/auth/phone', credentialLimiter);
 
 // Request logging middleware
 app.use((req, res, next) => {

@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/authController'); // Ensure this path is correct
+const otpAuthController = require('../controllers/otpAuthController');
 const { protect } = require('../middleware/authMiddleware'); // Import 'protect' middleware
 
 // @route   POST /api/horizon/auth/register-owner
@@ -28,6 +29,14 @@ router.post('/set-active-organization', protect, authController.setActiveOrganiz
 // @desc    Get current logged-in user's profile, active org, and memberships.
 // @access  Private (Requires JWT)
 router.get('/me', protect, authController.getMe);
+
+// --- Phone OTP login ---
+router.post('/otp/request', otpAuthController.requestLoginOtp);
+router.post('/otp/verify', otpAuthController.verifyLoginOtp);
+
+// --- Change phone (authenticated, OTP-verified to the new number) ---
+router.post('/phone/change/request', protect, otpAuthController.requestPhoneChange);
+router.post('/phone/change/verify', protect, otpAuthController.verifyPhoneChange);
 
 // @route   POST /api/horizon/auth/forgot-password
 // @desc    Initiate password reset process.

@@ -36,10 +36,18 @@ const userSchema = new mongoose.Schema(
             trim: true,
             maxlength: [100, 'Name cannot exceed 100 characters.'],
         },
-        // Phone verification fields removed as per new strategy.
-        // Email verification (isVerified, verificationToken etc.) can be added later if desired
-        // for the self-registering owner, or as a secondary verification.
-        // For now, focusing on account setup for admin-added users.
+        // Phone — used for OTP login and SMS. Stored E.164 (e.g. +918800237144).
+        phone: {
+            type: String,
+            default: null,
+            trim: true,
+            index: true,
+            sparse: true,
+        },
+        phoneVerified: {
+            type: Boolean,
+            default: false,
+        },
 
         isAccountActive: { // Tracks if the user has completed their initial setup (if admin-provisioned) or self-registered.
             type: Boolean,
